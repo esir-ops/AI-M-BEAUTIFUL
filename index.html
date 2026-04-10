@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+  <title>AI'm Beautiful</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,700;0,900;1,400;1,700&family=Jost:wght@300;400;500&display=swap" rel="stylesheet"/>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+<canvas id="particles-bg"></canvas>
+
+<!-- SCREEN 1: WELCOME -->
+<div id="screen-welcome" class="screen active">
+  <div class="welcome-bg-ring"></div>
+  <div class="welcome-bg-ring r2"></div>
+  <div class="welcome-wrap">
+    <div class="sparkle s1">✦</div>
+    <div class="sparkle s2">✧</div>
+    <div class="sparkle s3">✦</div>
+    <div class="sparkle s4">✧</div>
+    <div class="sparkle s5">✦</div>
+    <div class="sparkle s6">✧</div>
+    <div class="welcome-inner">
+      <h1 class="main-title">
+        <span class="title-ai">AI'm</span>
+        <span class="title-beautiful">Beautiful</span>
+      </h1>
+      <div class="title-divider"><span>✦</span></div>
+      <p class="tagline">Your mirror has been waiting.<br>Are you ready to glow?</p>
+      <p class="sub-tagline">Soft &amp; Natural · AI-Guided Makeup · Personalized for You</p>
+      <button class="btn-glow" onclick="goTo('screen-focal')">
+        <span class="btn-text">Let's Begin</span>
+        <span class="btn-shine"></span>
+      </button>
+      <p class="school-note">Group 11 BS Computer Engineering · School of Engineering and Architecture</p>
+    </div>
+  </div>
+</div>
+
+<!-- SCREEN 2: FOCAL POINT -->
+<div id="screen-focal" class="screen">
+  <div class="page-wrap">
+    <div class="page-header">
+      <h2 class="page-title">Choose Your <em>Focal Point</em></h2>
+      <p class="page-sub">This feature gets the spotlight in your Soft &amp; Natural look</p>
+    </div>
+    <div class="focal-grid">
+      <div class="focal-card" data-focal="lips" onclick="selectFocal('lips',this)">
+        <div class="focal-glyph">&#9827;</div>
+        <div class="focal-name">Lips</div>
+        <div class="focal-desc">Fuller, defined lip color</div>
+      </div>
+      <div class="focal-card" data-focal="eyebrows" onclick="selectFocal('eyebrows',this)">
+        <div class="focal-glyph">&#10022;</div>
+        <div class="focal-name">Eyebrows</div>
+        <div class="focal-desc">Bold, sculpted brows</div>
+      </div>
+      <div class="focal-card" data-focal="cheeks" onclick="selectFocal('cheeks',this)">
+        <div class="focal-glyph">&#10047;</div>
+        <div class="focal-name">Cheeks</div>
+        <div class="focal-desc">Glowing, flushed cheeks</div>
+      </div>
+      <div class="focal-card" data-focal="contour" onclick="selectFocal('contour',this)">
+        <div class="focal-glyph">&#9670;</div>
+        <div class="focal-name">Contour</div>
+        <div class="focal-desc">Sculpted facial structure</div>
+      </div>
+    </div>
+    <div class="page-actions">
+      <button class="btn-primary" id="btn-to-camera" onclick="goTo('screen-camera')" disabled>
+        Analyze My Face →
+      </button>
+      <button class="btn-ghost" onclick="goTo('screen-welcome')">← Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- SCREEN 3: CAMERA -->
+<div id="screen-camera" class="screen">
+  <div class="page-wrap">
+    <div class="page-header">
+      <h2 class="page-title" id="cam-title">Setting up camera...</h2>
+      <p class="page-sub" id="cam-sub">Please wait a moment</p>
+    </div>
+    <div class="cam-box">
+      <video id="video" autoplay playsinline muted></video>
+      <canvas id="overlay"></canvas>
+      <div class="cam-corners">
+        <i class="cc tl"></i><i class="cc tr"></i>
+        <i class="cc bl"></i><i class="cc br"></i>
+      </div>
+      <div id="light-warn" class="light-warn hide">
+        ⚠ Too dark — please turn on your LED strip
+      </div>
+    </div>
+    <div class="pill-row">
+      <div class="pill" id="pill-face">Face: searching...</div>
+      <div class="pill" id="pill-lm">Landmarks: —</div>
+      <div class="pill" id="pill-tone">Tone: —</div>
+    </div>
+    <div class="page-actions">
+      <button class="btn-primary" id="btn-detect" onclick="startDetection()" disabled>
+        Detect My Face
+      </button>
+      <button class="btn-ghost" onclick="goTo('screen-focal')">← Back</button>
+    </div>
+  </div>
+</div>
+
+<!-- SCREEN 4: SHADES -->
+<div id="screen-shades" class="screen">
+  <div class="page-wrap">
+    <div class="page-header">
+      <h2 class="page-title">Your <em>Shades</em></h2>
+      <p class="page-sub" id="shade-tone-label">Based on your detected skin tone</p>
+    </div>
+    <div class="shade-grid" id="shade-grid"></div>
+    <div class="focal-badge-wrap">
+      <span class="focal-badge">Focal point: <strong id="focal-badge-label"></strong></span>
+    </div>
+    <div class="page-actions">
+      <button class="btn-primary" onclick="startMakeupSteps()">
+        Start Makeup Guide →
+      </button>
+      <button class="btn-ghost" onclick="goTo('screen-camera')">← Retake</button>
+    </div>
+  </div>
+</div>
+
+<!-- SCREEN 5: STEP GUIDE -->
+<div id="screen-step" class="screen">
+  <div class="step-layout">
+    <div class="step-mirror-col">
+      <div class="cam-box step-cam-box">
+        <video id="step-video" autoplay playsinline muted></video>
+        <canvas id="step-overlay"></canvas>
+        <div class="cam-corners">
+          <i class="cc tl"></i><i class="cc tr"></i>
+          <i class="cc bl"></i><i class="cc br"></i>
+        </div>
+      </div>
+    </div>
+    <div class="step-info-col">
+      <div class="step-progress">
+        <div class="step-dot-row" id="step-dot-row"></div>
+        <p class="step-counter" id="step-counter">Step 1 of 4</p>
+      </div>
+      <h2 class="step-name" id="step-name">Lips</h2>
+      <p class="step-instruction" id="step-instruction">Follow the guide on the mirror</p>
+      <div class="step-shade-card">
+        <div class="ssc-swatch" id="ssc-swatch"></div>
+        <div class="ssc-info">
+          <div class="ssc-shade" id="ssc-shade"></div>
+          <div class="ssc-brand" id="ssc-brand"></div>
+          <div class="ssc-slot" id="ssc-slot"></div>
+        </div>
+      </div>
+      <div class="feedback-area" id="feedback-area" style="display:none">
+        <div class="feedback-icon" id="feedback-icon">✓</div>
+        <p class="feedback-msg" id="feedback-msg">Looks great!</p>
+      </div>
+      <div class="step-actions">
+        <button class="btn-primary" id="btn-check" onclick="checkPlacement()">
+          Check My Placement
+        </button>
+        <button class="btn-ghost" id="btn-next" onclick="nextStep()" style="display:none">
+          Next Step →
+        </button>
+        <button class="btn-retry" id="btn-retry" onclick="retryStep()" style="display:none">
+          Retry ↺
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SCREEN 6: SUMMARY -->
+<div id="screen-summary" class="screen">
+  <div class="page-wrap">
+    <div class="summary-trophy">✦</div>
+    <h2 class="page-title summary-title">You're done!</h2>
+    <p class="page-sub" id="summary-sub">Here is how your look came together</p>
+    <div class="summary-grid" id="summary-grid"></div>
+    <div class="summary-overall" id="summary-overall"></div>
+    <div class="page-actions">
+      <button class="btn-glow" onclick="goTo('screen-welcome')">
+        <span class="btn-text">Start Over</span>
+        <span class="btn-shine"></span>
+      </button>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
+<script src="app.js"></script>
+</body>
+</html>

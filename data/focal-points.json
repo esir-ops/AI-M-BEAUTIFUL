@@ -1,0 +1,6 @@
+{
+  "lips":     { "label": "Lips",     "desc": "Fuller, defined lip color as the star", "mapStep": "lips"     },
+  "eyebrows": { "label": "Eyebrows", "desc": "Bold, sculpted brows that frame your face", "mapStep": "eyebrows" },
+  "cheeks":   { "label": "Cheeks",   "desc": "Glowing, flushed cheeks as the centerpiece", "mapStep": "blush"    },
+  "contour":  { "label": "Contour",  "desc": "Sculpted, defined facial structure", "mapStep": "contour"  }
+}

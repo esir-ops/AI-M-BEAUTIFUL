@@ -1,0 +1,38 @@
+{
+  "light_warm": {
+    "lips":     { "shade": "Headstrong",        "product": "Soft Matte Lipstick",          "brand": "Squad Cosmetics",  "slot": 1, "hex": "#D4857A" },
+    "blush":    { "shade": "Soft Serve",         "product": "Soft Serve Melting Blush",     "brand": "Squad Cosmetics",  "slot": 2, "hex": "#F0A898" },
+    "eyebrows": { "shade": "Taupe",              "product": "Brow Game Eyebrow Pencil",     "brand": "Squad Cosmetics",  "slot": 3, "hex": "#9A8270" },
+    "contour":  { "shade": "Warm Contour",       "product": "Contour and Blush Palette",    "brand": "Detail Cosmetics", "slot": 4, "hex": "#C09070" }
+  },
+  "light_cool": {
+    "lips":     { "shade": "Ms. President",      "product": "Jelly Lips Lip Plumper",       "brand": "Detail Cosmetics", "slot": 1, "hex": "#E090A8" },
+    "blush":    { "shade": "Iced Scramble",      "product": "Soft Serve Melting Blush",     "brand": "Squad Cosmetics",  "slot": 2, "hex": "#F0B8C8" },
+    "eyebrows": { "shade": "Brunette",           "product": "Brow Game Eyebrow Pencil",     "brand": "Squad Cosmetics",  "slot": 3, "hex": "#8B7060" },
+    "contour":  { "shade": "Cool Contour",       "product": "Contour and Blush Vol. II",    "brand": "Detail Cosmetics", "slot": 4, "hex": "#B8A090" }
+  },
+  "medium_warm": {
+    "lips":     { "shade": "Vigorous",           "product": "Soft Matte Lipstick",          "brand": "Squad Cosmetics",  "slot": 1, "hex": "#C07060" },
+    "blush":    { "shade": "Tutti Frutti",       "product": "Soft Serve Melting Blush",     "brand": "Squad Cosmetics",  "slot": 2, "hex": "#E09080" },
+    "eyebrows": { "shade": "Chocolate",          "product": "Brow Game Eyebrow Pencil",     "brand": "Squad Cosmetics",  "slot": 3, "hex": "#7A5838" },
+    "contour":  { "shade": "Deep Warm Contour",  "product": "Contour and Blush Palette",    "brand": "Detail Cosmetics", "slot": 4, "hex": "#A07050" }
+  },
+  "medium_cool": {
+    "lips":     { "shade": "Hibiscus",           "product": "Melting Touch Velvet Blush",   "brand": "Detail Cosmetics", "slot": 1, "hex": "#B07888" },
+    "blush":    { "shade": "Butternut",          "product": "Soft Serve Melting Blush",     "brand": "Squad Cosmetics",  "slot": 2, "hex": "#C09080" },
+    "eyebrows": { "shade": "Mocha",              "product": "Superfine Liner Liquid Brow",  "brand": "Detail Cosmetics", "slot": 3, "hex": "#6A5040" },
+    "contour":  { "shade": "Cool Contour",       "product": "Contour and Blush Vol. II",    "brand": "Detail Cosmetics", "slot": 4, "hex": "#9A8878" }
+  },
+  "dark_warm": {
+    "lips":     { "shade": "Berries and Cream",  "product": "Soft Serve Melting Blush",     "brand": "Squad Cosmetics",  "slot": 1, "hex": "#8B4A38" },
+    "blush":    { "shade": "Neapolitan",         "product": "Soft Serve Melting Blush",     "brand": "Squad Cosmetics",  "slot": 2, "hex": "#A06048" },
+    "eyebrows": { "shade": "Chocolate",          "product": "Brow Game Eyebrow Pencil",     "brand": "Squad Cosmetics",  "slot": 3, "hex": "#4A3020" },
+    "contour":  { "shade": "Deep Warm Contour",  "product": "Contour and Blush Palette",    "brand": "Detail Cosmetics", "slot": 4, "hex": "#7A5030" }
+  },
+  "dark_cool": {
+    "lips":     { "shade": "Hibiscus",           "product": "Melting Touch Velvet Blush",   "brand": "Detail Cosmetics", "slot": 1, "hex": "#7A3A58" },
+    "blush":    { "shade": "Berries and Cream",  "product": "Soft Serve Melting Blush",     "brand": "Squad Cosmetics",  "slot": 2, "hex": "#8A4858" },
+    "eyebrows": { "shade": "Mocha",              "product": "Superfine Liner Liquid Brow",  "brand": "Detail Cosmetics", "slot": 3, "hex": "#3A2830" },
+    "contour":  { "shade": "Cool Contour",       "product": "Contour and Blush Vol. II",    "brand": "Detail Cosmetics", "slot": 4, "hex": "#6A5060" }
+  }
+}
