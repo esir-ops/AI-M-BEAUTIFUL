@@ -61,7 +61,14 @@ function syncOverlay(canvasEl, videoEl) {
   // Only update when dimensions actually changed — avoids clearing the canvas unnecessarily
   if (canvasEl.width !== W)  canvasEl.width  = W;
   if (canvasEl.height !== H) canvasEl.height = H;
-  return { W, H };
+  const vW    = videoEl.videoWidth  || 640;
+  const vH    = videoEl.videoHeight || 480;
+  const scale = Math.max(W / vW, H / vH);
+  const effW  = vW * scale;   // full display width before horizontal crop
+  const effH  = vH * scale;   // full display height before vertical crop
+  const ox    = (effW - W) / 2;  // pixels cropped from each horizontal side
+  const oy    = (effH - H) / 2;  // pixels cropped from each vertical side
+  return { W, H, effW, effH, ox, oy };  
 }
  
 // ─────────────────────────────────────────
@@ -226,7 +233,7 @@ function onDetectResults(results) {
   const video  = document.getElementById('video');
  
   // FIX: sync canvas to video's DISPLAYED size, not raw resolution
-  const { W, H } = syncOverlay(canvas, video);
+  const { W, H, effW, effH, ox, oy } = syncOverlay(canvas, video);
  
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
@@ -241,14 +248,19 @@ function onDetectResults(results) {
     pFace.textContent = 'Face: Detected ✓'; pFace.classList.add('ok');
     pLM.textContent   = 'Landmarks: 468 ✓'; pLM.classList.add('ok');
  
+    // Shift drawing origin to account for object-fit:cover crop offset
+    ctx.save();
+    ctx.translate(-ox, -oy);
     ctx.fillStyle = 'rgba(201,149,106,0.22)';
-    lm.forEach(pt => { ctx.beginPath(); ctx.arc(pt.x*W, pt.y*H, 1.4, 0, Math.PI*2); ctx.fill(); });
+    lm.forEach(pt => { ctx.beginPath(); ctx.arc(pt.x*effW, pt.y*effH, 1.4, 0, Math.PI*2); ctx.fill(); });
  
-    drawLips    (ctx,lm,W,H,'rgba(220,130,120,0.78)','rgba(220,130,120,0.18)',2,false);
-    drawBrows   (ctx,lm,W,H,'rgba(180,130,80,0.7)', 'rgba(160,110,60,0.15)',3);
-    drawBlush   (ctx,lm,W,H,'rgba(230,150,140,0.55)','rgba(230,150,140,0.10)',2);
-    drawContour (ctx,lm,W,H,'rgba(190,140,80,0.6)', 'rgba(170,120,60,0.10)',2.5);
- 
+    drawLips    (ctx,lm,effW,effH,'rgba(220,130,120,0.78)','rgba(220,130,120,0.18)',2,false);
+    drawBrows   (ctx,lm,effW,effH,'rgba(180,130,80,0.7)', 'rgba(160,110,60,0.15)',3);
+    drawBlush   (ctx,lm,effW,effH,'rgba(230,150,140,0.55)','rgba(230,150,140,0.10)',2);
+    drawContour (ctx,lm,effW,effH,'rgba(190,140,80,0.6)', 'rgba(170,120,60,0.10)',2.5);
+    ctx.restore();
+
+    
     if (!STATE.toneKey) {
       const tone = detectToneFromImage(results.image, lm, W, H);
       if (tone) {
@@ -486,7 +498,7 @@ function onStepResults(results) {
   if (!canvas || !video) return;
  
   // FIX: sync canvas to video's DISPLAYED size on every frame
-  const { W, H } = syncOverlay(canvas, video);
+const { W, H, effW, effH, ox, oy } = syncOverlay(canvas, video);
  
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
@@ -503,20 +515,26 @@ function onStepResults(results) {
   const sc   = hexToRgba(hex, 0.92);
   const fc   = hexToRgba(hex, 0.30);
  
-  if      (cs==='lips')      drawLips    (ctx,lm,W,H,sc,fc,3.5,true);
-  else if (cs==='blush')     drawBlush   (ctx,lm,W,H,sc,fc,4);
-  else if (cs==='eyebrows')  drawBrows   (ctx,lm,W,H,sc,fc,4.5);
-  else if (cs==='contour')   drawContour (ctx,lm,W,H,sc,fc,4);
+  // Shift drawing origin to account for object-fit:cover crop offset
+  ctx.save();
+  ctx.translate(-ox, -oy);
+ 
+  if      (cs==='lips')      drawLips    (ctx,lm,effW,effH,sc,fc,3.5,true);
+  else if (cs==='blush')     drawBlush   (ctx,lm,effW,effH,sc,fc,4);
+  else if (cs==='eyebrows')  drawBrows   (ctx,lm,effW,effH,sc,fc,4.5);
+  else if (cs==='contour')   drawContour (ctx,lm,effW,effH,sc,fc,4);
  
   if (cs === fs) {
     const gc = hexToRgba(hex, 1.0);
     ctx.save(); ctx.shadowColor=hex; ctx.shadowBlur=18;
-    if      (cs==='lips')     drawLips    (ctx,lm,W,H,gc,null,1.5,false);
-    else if (cs==='blush')    drawBlush   (ctx,lm,W,H,gc,null,2);
-    else if (cs==='eyebrows') drawBrows   (ctx,lm,W,H,gc,null,2.5);
-    else if (cs==='contour')  drawContour (ctx,lm,W,H,gc,null,2);
+    if      (cs==='lips')     drawLips    (ctx,lm,effW,effH,gc,null,1.5,false);
+    else if (cs==='blush')    drawBlush   (ctx,lm,effW,effH,gc,null,2);
+    else if (cs==='eyebrows') drawBrows   (ctx,lm,effW,effH,gc,null,2.5);
+    else if (cs==='contour')  drawContour (ctx,lm,effW,effH,gc,null,2);
     ctx.restore();
   }
+ 
+  ctx.restore();
 }
  
 // ─────────────────────────────────────────
