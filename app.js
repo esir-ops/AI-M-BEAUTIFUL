@@ -183,9 +183,9 @@ async function initCamera() {
 }
  
 function stopStream() {
-  if (STATE.stream) { STATE.stream.getTracks().forEach(t => t.stop()); STATE.stream = null; }
+  if (STATE.camera) { try { STATE.camera.stop(); } catch(e) {} STATE.camera = null; }
   if (STATE.faceMesh) { try { STATE.faceMesh.close(); } catch(e) {} STATE.faceMesh = null; }
-  STATE.camera = null;
+  if (STATE.stream) { STATE.stream.getTracks().forEach(t => t.stop()); STATE.stream = null; }
 }
  
 // ─────────────────────────────────────────
@@ -438,15 +438,21 @@ function showShades() {
 //  MAKEUP STEP LOOP
 // ─────────────────────────────────────────
 async function startMakeupSteps() {
+   stopStream();
   STATE.currentStep = 0; STATE.stepResults = [];
+  renderStep(0); goTo('screen-step');
   const sv = document.getElementById('step-video');
   try {
     STATE.stream = await navigator.mediaDevices.getUserMedia(
       { video: { width:{ideal:640}, height:{ideal:480}, facingMode:'user' } });
     sv.srcObject = STATE.stream;
-    sv.onloadedmetadata = () => { startStepFaceMesh(); };
+    // onloadedmetadata won't fire if metadata is already available (e.g. re-entering the screen)
+    if (sv.readyState >= 1) {
+      startStepFaceMesh();
+    } else {
+      sv.onloadedmetadata = () => { startStepFaceMesh(); };
+    }
   } catch(e) { console.error('Step camera error:', e); }
-  renderStep(0); goTo('screen-step');
 }
  
 function renderStep(index) {
@@ -481,15 +487,17 @@ function renderStep(index) {
 //  STEP FACE MESH
 // ─────────────────────────────────────────
 function startStepFaceMesh() {
-  const video = document.getElementById('step-video');
-  const fm = new FaceMesh({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}` });
-  fm.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:.6, minTrackingConfidence:.6 });
-  fm.onResults(onStepResults); STATE.faceMesh = fm;
-  const cam = new Camera(video, {
-    onFrame: async () => { if (STATE.faceMesh) await STATE.faceMesh.send({ image:video }); },
-    width:640, height:480,
-  });
-  STATE.camera = cam; cam.start();
+ requestAnimationFrame(() => requestAnimationFrame(() => {
+    const video = document.getElementById('step-video');
+    const fm = new FaceMesh({ locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}` });
+    fm.setOptions({ maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:.6, minTrackingConfidence:.6 });
+    fm.onResults(onStepResults); STATE.faceMesh = fm;
+    const cam = new Camera(video, {
+      onFrame: async () => { if (STATE.faceMesh) await STATE.faceMesh.send({ image:video }); },
+      width:640, height:480,
+    });
+    STATE.camera = cam; cam.start();
+  }));
 }
  
 function onStepResults(results) {
