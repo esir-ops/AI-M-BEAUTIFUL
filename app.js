@@ -26,8 +26,8 @@ const LIP_INNER = [
 const LM_CUPID_VALLEY  = 0;
 const LM_BOTTOM_CENTER = 17;
  
-const BLUSH_LEFT  = [116,123,147,213,192,214,212,202,204,194,32,31,228,229,230,231,232,233,128,121,120,119,118,117];
-const BLUSH_RIGHT = [345,352,376,433,411,434,432,422,424,414,262,261,448,449,450,451,452,453,357,350,349,348,347,346];
+const BLUSH_CENTER_L = [116, 123, 50, 147, 36];
+const BLUSH_CENTER_R = [345, 352, 280, 376, 266];
 const BROW_LEFT_TOP     = [70,63,105,66,107];
 const BROW_LEFT_BOTTOM  = [46,53,52,65,55];
 const BROW_RIGHT_TOP    = [300,293,334,296,336];
@@ -346,14 +346,80 @@ function drawBrows(ctx, lm, W, H, sc, fc, lw) {
   });
 }
  
-function drawBlush(ctx, lm, W, H, sc, fc, lw) {
-  [BLUSH_LEFT,BLUSH_RIGHT].forEach(idx => {
-    ctx.beginPath();
-    ctx.moveTo(lm[idx[0]].x*W, lm[idx[0]].y*H);
-    idx.slice(1).forEach(i => ctx.lineTo(lm[i].x*W, lm[i].y*H));
-    ctx.closePath();
-    if (fc) { ctx.fillStyle=fc; ctx.fill(); }
-    ctx.strokeStyle=sc; ctx.lineWidth=lw; ctx.stroke();
+function drawBlush(ctx, lm, W, H, sc, fc, lw, coverage) {
+  // Face width used for proportional sizing
+  const faceW = Math.abs(lm[234].x - lm[454].x) * W;
+  const rx = faceW * 0.17;   // horizontal radius of the blush oval
+  const ry = faceW * 0.115;  // vertical radius
+ 
+  const zones = [
+    { keys: BLUSH_CENTER_L, eyeCorner: 130, earRef: 234 },
+    { keys: BLUSH_CENTER_R, eyeCorner: 359, earRef: 454 },
+  ];
+ 
+  zones.forEach(({ keys, eyeCorner, earRef }) => {
+    // Centroid of the cheek cluster
+    const cx = keys.reduce((s,i) => s + lm[i].x, 0) / keys.length * W;
+    const cy = keys.reduce((s,i) => s + lm[i].y, 0) / keys.length * H;
+ 
+    // Tilt the oval to follow the cheekbone slope (outer eye → ear direction)
+    const ex  = lm[eyeCorner].x * W, ey  = lm[eyeCorner].y * H;
+    const eax = lm[earRef].x   * W, eay = lm[earRef].y   * H;
+    const angle = Math.atan2(eay - ey, eax - ex) * 0.35; // gentle tilt
+ 
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+ 
+    // Soft fill
+    if (fc) {
+      ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI*2);
+      ctx.fillStyle = fc; ctx.fill();
+    }
+ 
+    // Dashed guide oval — "apply inside here"
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, Math.PI*2);
+    ctx.strokeStyle = sc; ctx.lineWidth = lw;
+    ctx.setLineDash([7, 5]); ctx.lineJoin = 'round'; ctx.stroke();
+    ctx.setLineDash([]);
+ 
+    // ── Coverage fill-ring ──────────────────────────────────────────────
+    if (coverage !== undefined) {
+      const clamped = Math.max(0, Math.min(1, coverage));
+      // Outer ring slightly larger than the guide oval
+      const ringRx = rx + lw * 2.2, ringRy = ry + lw * 2.2;
+      const startA = -Math.PI / 2;               // start at top
+      const endA   = startA + clamped * Math.PI * 2;
+ 
+      // Track (faint background ring)
+      ctx.beginPath();
+      ctx.ellipse(0, 0, ringRx, ringRy, 0, 0, Math.PI*2);
+      ctx.strokeStyle = sc.replace(/[\d.]+\)$/, '0.18)');
+      ctx.lineWidth = lw * 1.8; ctx.stroke();
+ 
+      // Filled arc scaled by coverage
+      if (clamped > 0.01) {
+        // Draw arc via rotated ellipse segments (canvas ellipse supports start/end angle)
+        ctx.beginPath();
+        ctx.ellipse(0, 0, ringRx, ringRy, 0, startA, endA);
+        ctx.strokeStyle = sc.replace(/[\d.]+\)$/, '0.9)');
+        ctx.lineWidth = lw * 1.8; ctx.lineCap = 'round'; ctx.stroke();
+      }
+ 
+      // Status label (rotated back to upright)
+      ctx.rotate(-angle);
+      const labelY = ry + lw * 7;
+      const label  = clamped >= 0.75 ? '✓ Great coverage'
+                   : clamped >= 0.40 ? 'Blend upward ↑'
+                   :                   'Apply blush here';
+      ctx.font      = `bold ${Math.max(10, Math.round(lw * 3.2))}px sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillStyle = sc; ctx.globalAlpha = 0.92;
+      ctx.fillText(label, 0, labelY);
+      ctx.globalAlpha = 1;
+    }
+ 
+    ctx.restore();
   });
 }
  
@@ -588,6 +654,28 @@ function analyzeZoneColor(video, lm, step) {
 }
  
 function rgbSat(r,g,b){const mx=Math.max(r,g,b)/255,mn=Math.min(r,g,b)/255; return mx===0?0:(mx-mn)/mx;}
+// Estimates how much blush has been applied (0 = none, 1 = full coverage).
+// Compares colour saturation at the cheek sample points against the bare-skin baseline.
+function getBlushCoverage(video, lm) {
+  try {
+    const vW = video.videoWidth||640, vH = video.videoHeight||480;
+    const tmp = document.createElement('canvas'); tmp.width=vW; tmp.height=vH;
+    const tctx = tmp.getContext('2d'); tctx.drawImage(video,0,0,vW,vH);
+    const pts = [123,352,116,345,50,280,205,425];
+    let sat=0, n=0;
+    pts.forEach(i => {
+      const x=Math.round(lm[i].x*vW), y=Math.round(lm[i].y*vH);
+      if (x>=1&&x<vW-1&&y>=1&&y<vH-1) {
+        const d=tctx.getImageData(x,y,1,1).data;
+        sat+=rgbSat(d[0],d[1],d[2]); n++;
+      }
+    });
+    // Bare skin saturation ~0.06-0.12; blush adds up to ~0.18 more.
+    const avg = n>0 ? sat/n : 0;
+    return Math.min(1, Math.max(0, (avg - 0.09) / 0.15));
+  } catch(e) { return 0; }
+}
+
 function toneToRGB(k){
   return { light_warm:{r:225,g:192,b:167}, light_cool:{r:218,g:190,b:180},
            medium_warm:{r:190,g:150,b:120}, medium_cool:{r:178,g:152,b:144},
