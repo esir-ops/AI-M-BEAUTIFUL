@@ -507,13 +507,25 @@ function showShades() {
   const map={lips:'lips',eyebrows:'eyebrows',cheeks:'blush',contour:'contour'};
   const focal=map[STATE.focal]||STATE.focal;
   document.getElementById('focal-badge-label').textContent=STATE.focalData?.[STATE.focal]?.label||STATE.focal;
+  
+  // Focal-aware application intensity labels.
+  // Focal feature → full bold application; others → subtle supporting touch.
+  const intensityLabel = {
+    lips:      { lips:'Featured · bold application', blush:'Supporting · soft glow',   eyebrows:'Supporting · light strokes', contour:'Supporting · barely-there' },
+    eyebrows:  { lips:'Supporting · nude touch',    blush:'Supporting · soft glow',   eyebrows:'Featured · bold & defined',  contour:'Supporting · light sculpt'  },
+    cheeks:    { lips:'Supporting · nude touch',    blush:'Featured · flushed glow',  eyebrows:'Supporting · light strokes', contour:'Supporting · barely-there'  },
+    contour:   { lips:'Supporting · nude touch',    blush:'Supporting · soft glow',   eyebrows:'Supporting · light strokes', contour:'Featured · sculpted shadow'  },
+  };
+  const iLabels = intensityLabel[STATE.focal] || intensityLabel.lips;
+
   const grid=document.getElementById('shade-grid'); grid.innerHTML='';
   STEPS.forEach(step=>{
     const shade=tone[step]; if (!shade) return;
     const isFocal=step===focal;
     const card=document.createElement('div');
     card.className='shade-card'+(isFocal?' focal-highlight':'');
-    card.innerHTML=`<div class="shade-swatch" style="background:${shade.hex}"></div><div class="shade-step-label">${STEP_LABELS[step]}${isFocal?'<span class="focal-star"> ★</span>':''}</div><div class="shade-name-txt">${shade.shade}</div><div class="shade-brand-txt">${shade.brand||shade.product||''}</div><div class="shade-slot-badge">Tray slot ${shade.slot}</div>`;
+    const usageBadge=`<div class="shade-usage-badge ${isFocal?'usage-focal':'usage-support'}">${iLabels[step]||''}</div>`;
+    card.innerHTML=`<div class="shade-swatch" style="background:${shade.hex}"></div><div class="shade-step-label">${STEP_LABELS[step]}${isFocal?'<span class="focal-star"> ★</span>':''}</div><div class="shade-name-txt">${shade.shade}</div><div class="shade-brand-txt">${shade.brand||shade.product||''}</div>${usageBadge}<div class="shade-slot-badge">Tray slot ${shade.slot}</div>`;
     grid.appendChild(card);
   });
   goTo('screen-shades');
@@ -1033,48 +1045,60 @@ function stopTryOn() {
 function onTryOnResults(results) {
   const canvas=document.getElementById('tryon-canvas');
   const video=document.getElementById('tryon-video');
-  if(!canvas||!video) return;
-  const {W,H,effW,effH,ox,oy}=syncOverlay(canvas,video);
+  if(!canvas||!video||!video.videoWidth) return;
+  const vW=video.videoWidth;
+  const vH=video.videoHeight;
+  if(canvas.width!==vW)  canvas.width=vW;
+  if(canvas.height!==vH) canvas.height=vH;
   const ctx=canvas.getContext('2d');
-  ctx.clearRect(0,0,W,H);
+  
+  ctx.drawImage(video,0,0,vW,vH);
+
   if(!results.multiFaceLandmarks?.length) return;
   const lm=results.multiFaceLandmarks[0];
-  ctx.save(); ctx.translate(-ox,-oy);
-  drawVirtualMakeup(ctx,lm,effW,effH);
-  ctx.restore();
+  drawVirtualMakeup(ctx,lm,vW,vH);
 }
 
 // ── Virtual makeup renderer ────────────────────────────────────────
-// Draws the recommended shades as semi-transparent AR overlays using
-// the FaceMesh landmarks. Rendering order: contour → blush → brows → lips
-// (back-to-front so lips are always on top).
+// Rendering order (back → front): contour → blush → brows → lips
+// Uses 'multiply' composite so each layer darkens / tints the skin
+// pixels naturally — like real pigment on skin.
 function drawVirtualMakeup(ctx, lm, W, H) {
   const tone=STATE.shades?.[STATE.toneKey||'medium_warm'];
   if(!tone) return;
 
-  function rgb(hex) {
+  function rgb(hex){
     if(!hex||hex.length<7) return {r:200,g:120,b:120};
     return {r:parseInt(hex.slice(1,3),16),g:parseInt(hex.slice(3,5),16),b:parseInt(hex.slice(5,7),16)};
   }
+
+  const FOCAL_MULT = {
+    lips:     { lips:1.00, blush:0.38, eyebrows:0.50, contour:0.30 },
+    eyebrows: { lips:0.38, blush:0.32, eyebrows:1.00, contour:0.45 },
+    cheeks:   { lips:0.38, blush:1.00, eyebrows:0.50, contour:0.30 },
+    contour:  { lips:0.38, blush:0.32, eyebrows:0.50, contour:1.00 },
+  };
+  const mult = FOCAL_MULT[STATE.focal] || FOCAL_MULT.lips;
 
   const faceW=Math.abs(lm[234].x-lm[454].x)*W;
   const faceH=Math.abs(lm[10].y -lm[152].y)*H;
   const faceRef=Math.max(faceW,faceH*0.80);
   const nosePx=lm[1].x*W, nosePy=lm[1].y*H;
 
-  // ── Contour: soft jaw shadow + cheek hollows ──────────────────
-  if(tone.contour?.hex) {
+  // ── Contour: sculpt jaw + cheek hollows with multiply shadow ──
+  if(tone.contour?.hex && mult.contour>0.05){
     const {r,g,b}=rgb(tone.contour.hex);
     ctx.save();
-    ctx.filter='blur(11px)';
-    ctx.globalAlpha=0.42;
+    ctx.globalCompositeOperation='multiply';
+    ctx.filter='blur(14px)';
+    ctx.globalAlpha=0.72*mult.contour;
     ctx.fillStyle=`rgb(${r},${g},${b})`;
     [JAW_LEFT,JAW_RIGHT].forEach(idx=>{
       ctx.beginPath(); ctx.moveTo(lm[idx[0]].x*W,lm[idx[0]].y*H);
       idx.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
       ctx.closePath(); ctx.fill();
     });
-    ctx.globalAlpha=0.30;
+    ctx.globalAlpha=0.60*mult.contour;
     [CHEEK_HOLLOW_L,CHEEK_HOLLOW_R].forEach(idx=>{
       ctx.beginPath(); ctx.moveTo(lm[idx[0]].x*W,lm[idx[0]].y*H);
       idx.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
@@ -1083,32 +1107,39 @@ function drawVirtualMakeup(ctx, lm, W, H) {
     ctx.restore();
   }
 
-  // ── Blush: radial soft-glow on the cheeks ────────────────────
-  if(tone.blush?.hex) {
+  // ── Blush: tilted ellipse along the cheekbone ─────────────────
+  if(tone.blush?.hex && mult.blush>0.05){
     const {r,g,b}=rgb(tone.blush.hex);
     ctx.save();
-    ctx.globalAlpha=1;
+    ctx.globalCompositeOperation='source-over';
     [234,454].forEach(temple=>{
       const tx=lm[temple].x*W, ty=lm[temple].y*H;
-      const cx=nosePx+0.60*(tx-nosePx);
-      const cy=nosePy+0.60*(ty-nosePy)+faceRef*0.035;
-      const radius=faceRef*0.42;
-      const grad=ctx.createRadialGradient(cx,cy,0,cx,cy,radius);
-      grad.addColorStop(0,  `rgba(${r},${g},${b},0.50)`);
-      grad.addColorStop(0.45,`rgba(${r},${g},${b},0.24)`);
-      grad.addColorStop(1,  `rgba(${r},${g},${b},0)`);
+      const angle=Math.atan2(ty-nosePy, tx-nosePx);
+      const cx=nosePx+0.62*(tx-nosePx);
+      const cy=nosePy+0.62*(ty-nosePy)+faceRef*0.04;
+      const rMaj=faceRef*0.26;
+      const rMin=faceRef*0.15;
+      ctx.save();
+      ctx.translate(cx,cy); ctx.rotate(angle);
+      const grad=ctx.createRadialGradient(0,0,0, 0,0,rMaj);
+      grad.addColorStop(0,   `rgba(${r},${g},${b},${(0.52*baseAlpha).toFixed(3)})`);
+      grad.addColorStop(0.5, `rgba(${r},${g},${b},${(0.26*baseAlpha).toFixed(3)})`);
+      grad.addColorStop(1,   `rgba(${r},${g},${b},0)`);
       ctx.fillStyle=grad;
-      ctx.beginPath(); ctx.ellipse(cx,cy,radius,radius*0.70,0,0,Math.PI*2); ctx.fill();
+      ctx.scale(1, rMin/rMaj);
+      ctx.beginPath(); ctx.arc(0,0,rMaj,0,Math.PI*2); ctx.fill();
+      ctx.restore();
     });
     ctx.restore();
   }
 
-  // ── Eyebrows: filled polygon with slight blur ─────────────────
-  if(tone.eyebrows?.hex) {
+  // ── Eyebrows: multiply fill — darkens existing hair naturally ──
+  if(tone.eyebrows?.hex && mult.eyebrows>0.05){
     const {r,g,b}=rgb(tone.eyebrows.hex);
     ctx.save();
-    ctx.filter='blur(1.8px)';
-    ctx.globalAlpha=0.82;
+    ctx.globalCompositeOperation='multiply';
+    ctx.filter='blur(1.6px)';
+    ctx.globalAlpha=0.88*mult.eyebrows;
     ctx.fillStyle=`rgb(${r},${g},${b})`;
     [[BROW_LEFT_TOP,BROW_LEFT_BOTTOM],[BROW_RIGHT_TOP,BROW_RIGHT_BOTTOM]].forEach(([top,bot])=>{
       ctx.beginPath();
@@ -1120,23 +1151,34 @@ function drawVirtualMakeup(ctx, lm, W, H) {
     ctx.restore();
   }
 
-  // ── Lips: soft filled polygon ─────────────────────────────────
-  if(tone.lips?.hex) {
+  // ── Lips: full outer contour — one unified shape ───────────────
+  if(tone.lips?.hex && mult.lips>0.05){
     const {r,g,b}=rgb(tone.lips.hex);
-    ctx.save();
-    ctx.filter='blur(1.2px)';
-    ctx.globalAlpha=0.78;
-    ctx.fillStyle=`rgb(${r},${g},${b})`;
-    [LIP_FILL_TOP,LIP_FILL_BOT].forEach(indices=>{
-      const pts=lmPts(lm,indices,W,H);
-      ctx.beginPath(); softPolyPath(ctx,pts); ctx.fill();
-    });
-    // Subtle shine highlight on upper lip
-    ctx.filter='blur(3px)';
-    ctx.globalAlpha=0.18;
-    ctx.fillStyle='rgba(255,255,255,1)';
+    // Build lip layer on offscreen canvas so destination-out is sandboxed
+    const lc=document.createElement('canvas'); lc.width=W; lc.height=H;
+    const lx=lc.getContext('2d');
+    // 1. Fill outer contour with soft blur
+    lx.filter='blur(1.2px)';
+    lx.fillStyle=`rgb(${r},${g},${b})`;
+    const outerPts=lmPts(lm,LIP_OUTER_LOOP,W,H);
+    lx.beginPath(); softPolyPath(lx,outerPts); lx.fill();
+    // 2. Punch out inner mouth (teeth) region
+    lx.globalCompositeOperation='destination-out';
+    lx.filter='blur(0.8px)';
+    const innerPts=lmPts(lm,LIP_INNER,W,H);
+    lx.beginPath(); softPolyPath(lx,innerPts); lx.fill();
+    // 3. Add Cupid's bow specular highlight
+    lx.globalCompositeOperation='source-over';
+    lx.filter='blur(2.5px)';
+    lx.globalAlpha=0.20;
+    lx.fillStyle='rgba(255,255,255,1)';
     const shinePts=lmPts(lm,[37,0,267,82,13,312],W,H);
-    ctx.beginPath(); softPolyPath(ctx,shinePts); ctx.fill();
+    lx.beginPath(); softPolyPath(lx,shinePts); lx.fill();
+    // 4. Stamp the lip layer onto the main canvas with multiply at focal alpha
+    ctx.save();
+    ctx.globalCompositeOperation='multiply';
+    ctx.globalAlpha=0.90*mult.lips;
+    ctx.drawImage(lc,0,0);
     ctx.restore();
   }
 }
