@@ -508,24 +508,13 @@ function showShades() {
   const focal=map[STATE.focal]||STATE.focal;
   document.getElementById('focal-badge-label').textContent=STATE.focalData?.[STATE.focal]?.label||STATE.focal;
   
-  // Focal-aware application intensity labels.
-  // Focal feature → full bold application; others → subtle supporting touch.
-  const intensityLabel = {
-    lips:      { lips:'Featured · bold application', blush:'Supporting · soft glow',   eyebrows:'Supporting · light strokes', contour:'Supporting · barely-there' },
-    eyebrows:  { lips:'Supporting · nude touch',    blush:'Supporting · soft glow',   eyebrows:'Featured · bold & defined',  contour:'Supporting · light sculpt'  },
-    cheeks:    { lips:'Supporting · nude touch',    blush:'Featured · flushed glow',  eyebrows:'Supporting · light strokes', contour:'Supporting · barely-there'  },
-    contour:   { lips:'Supporting · nude touch',    blush:'Supporting · soft glow',   eyebrows:'Supporting · light strokes', contour:'Featured · sculpted shadow'  },
-  };
-  const iLabels = intensityLabel[STATE.focal] || intensityLabel.lips;
-
   const grid=document.getElementById('shade-grid'); grid.innerHTML='';
   STEPS.forEach(step=>{
     const shade=tone[step]; if (!shade) return;
     const isFocal=step===focal;
     const card=document.createElement('div');
     card.className='shade-card'+(isFocal?' focal-highlight':'');
-    const usageBadge=`<div class="shade-usage-badge ${isFocal?'usage-focal':'usage-support'}">${iLabels[step]||''}</div>`;
-    card.innerHTML=`<div class="shade-swatch" style="background:${shade.hex}"></div><div class="shade-step-label">${STEP_LABELS[step]}${isFocal?'<span class="focal-star"> ★</span>':''}</div><div class="shade-name-txt">${shade.shade}</div><div class="shade-brand-txt">${shade.brand||shade.product||''}</div>${usageBadge}<div class="shade-slot-badge">Tray slot ${shade.slot}</div>`;
+    card.innerHTML=`<div class="shade-swatch" style="background:${shade.hex}"></div><div class="shade-step-label">${STEP_LABELS[step]}${isFocal?'<span class="focal-star"> ★</span>':''}</div><div class="shade-name-txt">${shade.shade}</div><div class="shade-brand-txt">${shade.brand||shade.product||''}</div><div class="shade-slot-badge">Slot ${shade.slot}</div>`;
     grid.appendChild(card);
   });
   goTo('screen-shades');
@@ -1006,57 +995,69 @@ document.addEventListener('DOMContentLoaded',()=>{loadData();initParticles();});
 // ─────────────────────────────────────────
 //  VIRTUAL TRY-ON
 // ─────────────────────────────────────────
-let _toMesh=null, _toCam=null, _toStream=null;
+// _toLastLm caches landmarks so the makeup overlay redraws every rAF tick
+// independent of FaceMesh processing speed (~10-20 fps).
+let _toMesh=null, _toStream=null, _toRaf=null, _toLastLm=null;
 
 function startTryOn() {
   const modal=document.getElementById('tryon-modal');
   modal.style.display='flex';
   const video=document.getElementById('tryon-video');
   const loading=document.getElementById('tryon-loading');
+  if(_toStream) return; // already live
 
-  navigator.mediaDevices.getUserMedia({
-    video:{width:{ideal:640},height:{ideal:480},facingMode:'user'}
-  }).then(stream=>{
+  _toMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
+  _toMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.6,minTrackingConfidence:.6});
+  _toMesh.onResults(onTryOnResults);
+
+  navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:'user'}})
+  .then(stream=>{
     _toStream=stream;
     video.srcObject=stream;
-    video.onloadedmetadata=()=>{
-      if(loading) loading.style.display='none';
-      _toMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
-      _toMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.6,minTrackingConfidence:.6});
-      _toMesh.onResults(onTryOnResults);
-      _toCam=new Camera(video,{
-        onFrame:async()=>{ if(_toMesh) await _toMesh.send({image:video}); },
-        width:640, height:480
-      });
-      _toCam.start();
-    };
-  }).catch(e=>{ console.error('Try-on camera error:',e); if(loading) loading.textContent='Camera unavailable'; });
+    return video.play();
+  })
+  .then(()=>{
+    if(loading) loading.style.display='none';
+    const canvas=document.getElementById('tryon-canvas');
+    let sending=false, fc=0;
+    function loop(){
+      if(!_toStream||!_toMesh){ _toRaf=null; return; }
+      _toRaf=requestAnimationFrame(loop);
+      if(!canvas||!video.videoWidth||video.readyState<2) return;
+      const vW=video.videoWidth, vH=video.videoHeight;
+      if(canvas.width!==vW) canvas.width=vW;
+      if(canvas.height!==vH) canvas.height=vH;
+      const ctx=canvas.getContext('2d');
+      // Draw live video every frame — smooth preview regardless of FaceMesh speed
+      ctx.drawImage(video,0,0,vW,vH);
+      // Re-apply last known makeup overlay between FaceMesh results
+      if(_toLastLm) drawVirtualMakeup(ctx,_toLastLm,vW,vH);
+      // Send to FaceMesh every 3rd frame (~20 fps)
+      if(!sending && fc++%3===0){
+        sending=true;
+        _toMesh.send({image:video}).finally(()=>{ sending=false; });
+      }
+    }
+    loop();
+  })
+  .catch(e=>{ console.error('Try-on camera error:',e); if(loading) loading.textContent='Camera unavailable'; });
 }
 
 function stopTryOn() {
   document.getElementById('tryon-modal').style.display='none';
-  if(_toCam){try{_toCam.stop();}catch(e){} _toCam=null;}
+  if(_toRaf){cancelAnimationFrame(_toRaf); _toRaf=null;}
   if(_toMesh){try{_toMesh.close();}catch(e){} _toMesh=null;}
   if(_toStream){_toStream.getTracks().forEach(t=>t.stop()); _toStream=null;}
+  const video=document.getElementById('tryon-video');
+  if(video) video.srcObject=null;
+  _toLastLm=null;
   const loading=document.getElementById('tryon-loading');
   if(loading) loading.style.display='flex';
 }
 
+// Stores landmarks only — drawing happens every rAF tick in loop() above.
 function onTryOnResults(results) {
-  const canvas=document.getElementById('tryon-canvas');
-  const video=document.getElementById('tryon-video');
-  if(!canvas||!video||!video.videoWidth) return;
-  const vW=video.videoWidth;
-  const vH=video.videoHeight;
-  if(canvas.width!==vW)  canvas.width=vW;
-  if(canvas.height!==vH) canvas.height=vH;
-  const ctx=canvas.getContext('2d');
-  
-  ctx.drawImage(video,0,0,vW,vH);
-
-  if(!results.multiFaceLandmarks?.length) return;
-  const lm=results.multiFaceLandmarks[0];
-  drawVirtualMakeup(ctx,lm,vW,vH);
+  _toLastLm=results.multiFaceLandmarks?.[0]||null;
 }
 
 // ── Virtual makeup renderer ────────────────────────────────────────
@@ -1110,6 +1111,7 @@ function drawVirtualMakeup(ctx, lm, W, H) {
   // ── Blush: tilted ellipse along the cheekbone ─────────────────
   if(tone.blush?.hex && mult.blush>0.05){
     const {r,g,b}=rgb(tone.blush.hex);
+    const baseAlpha=mult.blush;
     ctx.save();
     ctx.globalCompositeOperation='source-over';
     [234,454].forEach(temple=>{
