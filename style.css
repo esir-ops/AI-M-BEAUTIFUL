@@ -232,6 +232,54 @@ html, body {
 }
 .btn-retry:hover{ background:rgba(192,82,74,.15); }
 
+.btn-tryon {
+  position:relative; overflow:hidden;
+  background:linear-gradient(135deg,#b87d52 0%,#e8c080 46%,#b87d52 100%);
+  border:none; color:#1a0a06;
+  font-family:var(--sans); font-size:.83rem;
+  font-weight:600; letter-spacing:.22em;
+  text-transform:uppercase;
+  padding:.88rem 3rem;
+  cursor:pointer; border-radius:40px;
+  min-width:210px;
+  box-shadow:0 0 22px rgba(201,149,106,.45), 0 4px 18px rgba(201,149,106,.25);
+  transition:transform .15s, box-shadow .25s;
+  animation:tryonPulse 3s ease-in-out infinite;
+}
+.btn-tryon:hover{
+  transform:translateY(-2px);
+  box-shadow:0 0 46px rgba(232,192,128,.75), 0 8px 32px rgba(201,149,106,.5);
+}
+.btn-tryon:active{ transform:scale(.97); }
+.btn-tryon::after{
+  content:'';
+  position:absolute; inset:0;
+  background:linear-gradient(105deg,transparent 35%,rgba(255,255,255,.30) 50%,transparent 65%);
+  transform:translateX(-100%);
+  animation:shine 2.6s ease-in-out infinite;
+}
+@keyframes tryonPulse{
+  0%,100%{ box-shadow:0 0 18px rgba(201,149,106,.38), 0 4px 14px rgba(201,149,106,.20); }
+  50%    { box-shadow:0 0 44px rgba(232,192,128,.72), 0 6px 28px rgba(201,149,106,.48); }
+}
+
+/* ── Compare My Look (step screen) ── */
+.btn-compare{
+  background:transparent;
+  border:1px solid rgba(201,149,106,.55);
+  color:rgba(201,149,106,.95);
+  font-family:var(--sans); font-size:.75rem;
+  letter-spacing:.16em; text-transform:uppercase;
+  padding:.62rem 1.6rem; cursor:pointer;
+  border-radius:20px; width:100%; max-width:320px;
+  transition:border-color .2s, color .2s, background .2s;
+}
+.btn-compare:hover{
+  border-color:var(--rose-gold);
+  background:rgba(201,149,106,.09);
+  color:var(--rose-light);
+}
+
 .page-actions {
   display:flex; flex-direction:column;
   align-items:center; gap:.75rem; width:100%;

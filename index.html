@@ -121,10 +121,8 @@
     <div class="focal-badge-wrap">
       <span class="focal-badge">Focal point: <strong id="focal-badge-label"></strong></span>
     </div>
-    <div style="text-align:center;margin:18px 0 4px;">
-      <button onclick="startTryOn()" style="background:transparent;border:1px solid rgba(201,149,106,0.55);color:rgba(201,149,106,0.95);font-family:'Jost',sans-serif;font-size:0.82rem;letter-spacing:0.12em;padding:9px 26px;border-radius:30px;cursor:pointer;transition:all .25s;">
-        ✦ &nbsp;TRY IT ON
-      </button>
+     <div style="text-align:center;margin:22px 0 6px;">
+      <button class="btn-tryon" onclick="startTryOn()">✦ &nbsp;TRY IT ON</button>
     </div>
     <div class="page-actions">
       <button class="btn-primary" onclick="startMakeupSteps()">
@@ -198,6 +196,7 @@
         <button class="btn-retry" id="btn-retry" onclick="retryStep()" style="display:none">
           Retry ↺
         </button>
+        <button class="btn-compare" onclick="startTryOn()">✦ &nbsp;Compare My Look</button>
       </div>
     </div>
   </div>

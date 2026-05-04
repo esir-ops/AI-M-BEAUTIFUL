@@ -524,6 +524,7 @@ function showShades() {
 //  MAKEUP STEP LOOP
 // ─────────────────────────────────────────
 async function startMakeupSteps() {
+  stopTryOn();
   stopStream();
   STATE.currentStep=0; STATE.stepResults=[]; STATE.lipSubStep=0;
   renderStep(0); goTo('screen-step');
@@ -997,7 +998,31 @@ document.addEventListener('DOMContentLoaded',()=>{loadData();initParticles();});
 // ─────────────────────────────────────────
 // _toLastLm caches landmarks so the makeup overlay redraws every rAF tick
 // independent of FaceMesh processing speed (~10-20 fps).
-let _toMesh=null, _toStream=null, _toRaf=null, _toLastLm=null;
+let _toMesh=null, _toStream=null, _toRaf=null, _toLastLm=null, _toStepOnly=null;
+
+function startStepTryOn() {
+  // ── 1. Tear down any running try-on session ──────────────────────
+  if(_toRaf)   { cancelAnimationFrame(_toRaf); _toRaf=null; }
+  if(_toMesh)  { try{_toMesh.close();}catch(e){} _toMesh=null; }
+  if(_toStream){ _toStream.getTracks().forEach(t=>t.stop()); _toStream=null; }
+  const _tv=document.getElementById('tryon-video');
+  if(_tv) _tv.srcObject=null;
+  _toLastLm=null;
+  const _tl=document.getElementById('tryon-loading');
+  if(_tl) _tl.style.display='flex';
+
+  // ── 2. Set the step-only filter BEFORE startTryOn creates the loop ─
+  const step  = STEPS[STATE.currentStep];
+  _toStepOnly = step;
+
+  // ── 3. Update modal labels ──────────────────────────────────────
+  const label     = STEP_LABELS[step] || step;
+  const titleEl   = document.getElementById('tryon-modal-title');
+  const captionEl = document.getElementById('tryon-modal-caption');
+  if(titleEl)   titleEl.textContent   = `✦ ${label} Preview`;
+  if(captionEl) captionEl.textContent = `${label.toUpperCase()} PREVIEW  ·  YOUR RECOMMENDED SHADE`;
+  startTryOn();
+}
 
 function startTryOn() {
   const modal=document.getElementById('tryon-modal');
@@ -1051,6 +1076,12 @@ function stopTryOn() {
   const video=document.getElementById('tryon-video');
   if(video) video.srcObject=null;
   _toLastLm=null;
+  // Reset step-specific state and modal labels
+  _toStepOnly=null;
+  const titleEl   = document.getElementById('tryon-modal-title');
+  const captionEl = document.getElementById('tryon-modal-caption');
+  if(titleEl)   titleEl.textContent   = '✦ Try It On';
+  if(captionEl) captionEl.innerHTML   = 'VIRTUAL TRY-ON &nbsp;·&nbsp; YOUR RECOMMENDED SHADES';
   const loading=document.getElementById('tryon-loading');
   if(loading) loading.style.display='flex';
 }
@@ -1079,32 +1110,52 @@ function drawVirtualMakeup(ctx, lm, W, H) {
     cheeks:   { lips:0.38, blush:1.00, eyebrows:0.50, contour:0.30 },
     contour:  { lips:0.38, blush:0.32, eyebrows:0.50, contour:1.00 },
   };
-  const mult = FOCAL_MULT[STATE.focal] || FOCAL_MULT.lips;
+  // Step-specific compare: zero every feature except the current step (full strength)
+  const mult = _toStepOnly
+    ? { lips:0, blush:0, eyebrows:0, contour:0, [_toStepOnly]:1.0 }
+    : (FOCAL_MULT[STATE.focal] || FOCAL_MULT.lips);
 
   const faceW=Math.abs(lm[234].x-lm[454].x)*W;
   const faceH=Math.abs(lm[10].y -lm[152].y)*H;
   const faceRef=Math.max(faceW,faceH*0.80);
   const nosePx=lm[1].x*W, nosePy=lm[1].y*H;
 
-  // ── Contour: sculpt jaw + cheek hollows with multiply shadow ──
+  // ── Contour: sculpt jaw + cheek hollows + nose bridge ──────────
   if(tone.contour?.hex && mult.contour>0.05){
     const {r,g,b}=rgb(tone.contour.hex);
     ctx.save();
     ctx.globalCompositeOperation='multiply';
+    ctx.fillStyle=`rgb(${r},${g},${b})`;
     ctx.filter='blur(14px)';
     ctx.globalAlpha=0.72*mult.contour;
-    ctx.fillStyle=`rgb(${r},${g},${b})`;
     [JAW_LEFT,JAW_RIGHT].forEach(idx=>{
       ctx.beginPath(); ctx.moveTo(lm[idx[0]].x*W,lm[idx[0]].y*H);
       idx.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
       ctx.closePath(); ctx.fill();
     });
+    
+    ctx.filter='blur(14px)';
     ctx.globalAlpha=0.60*mult.contour;
     [CHEEK_HOLLOW_L,CHEEK_HOLLOW_R].forEach(idx=>{
       ctx.beginPath(); ctx.moveTo(lm[idx[0]].x*W,lm[idx[0]].y*H);
       idx.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
       ctx.closePath(); ctx.fill();
     });
+
+    ctx.filter='blur(7px)';
+    ctx.globalAlpha=0.50*mult.contour;
+    const bridgePt={x:lm[6].x*W,   y:lm[6].y*H};
+    const tipPt   ={x:lm[4].x*W,   y:lm[4].y*H};
+    const alarL   ={x:lm[49].x*W,  y:lm[49].y*H};
+    const alarR   ={x:lm[279].x*W, y:lm[279].y*H};
+    const nW=Math.abs(alarR.x-alarL.x);
+    const nH=Math.abs(tipPt.y-bridgePt.y);
+    const midY=(bridgePt.y+tipPt.y)/2;
+    // Left shadow strip (inside the left alar, running the bridge height)
+    ctx.beginPath(); ctx.ellipse(alarL.x-nW*0.07, midY, nW*0.09, nH*0.52, 0, 0, Math.PI*2); ctx.fill();
+    // Right shadow strip
+    ctx.beginPath(); ctx.ellipse(alarR.x+nW*0.07, midY, nW*0.09, nH*0.52, 0, 0, Math.PI*2); ctx.fill();
+
     ctx.restore();
   }
 
