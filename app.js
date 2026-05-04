@@ -1110,10 +1110,10 @@ function drawVirtualMakeup(ctx, lm, W, H) {
     cheeks:   { lips:0.38, blush:1.00, eyebrows:0.50, contour:0.30 },
     contour:  { lips:0.38, blush:0.32, eyebrows:0.50, contour:1.00 },
   };
-  // Step-specific compare: zero every feature except the current step (full strength)
+  const focalMult = FOCAL_MULT[STATE.focal] || FOCAL_MULT.lips;
   const mult = _toStepOnly
-    ? { lips:0, blush:0, eyebrows:0, contour:0, [_toStepOnly]:1.0 }
-    : (FOCAL_MULT[STATE.focal] || FOCAL_MULT.lips);
+    ? { lips:0, blush:0, eyebrows:0, contour:0, [_toStepOnly]: focalMult[_toStepOnly] }
+    : focalMult;
 
   const faceW=Math.abs(lm[234].x-lm[454].x)*W;
   const faceH=Math.abs(lm[10].y -lm[152].y)*H;
