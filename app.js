@@ -2,9 +2,9 @@ const STATE = {
   focal:null, toneKey:null, shades:null, focalData:null,
   currentStep:0, stepResults:[], faceMesh:null, camera:null,
   stream:null, lastLandmarks:null, checkPending:false,
-  lipSubStep:0,
+  lipSubStep:0, glassesWarned:false,
   smoothedLm:null,
-  blushLm:null,        // separate slow EMA for blush guide — stable against hand jitter
+  blushLm:null,
   blushFrameCount:0,
 };
 
@@ -15,7 +15,7 @@ const STEP_INSTRUCTIONS = {
   lips:     'Follow the glowing outline on your lips. Start at the gold dot on the V-shape at the top center, then work outward to each corner. Fill in the top, then repeat from the bottom center outward.',
   blush:    'Smile softly and sweep blush onto the apples of your cheeks, blending upward along the oval guide.',
   eyebrows: 'Fill in your brows following the guide. Use short, hair-like strokes for a natural finish.',
-  contour:  'Apply contour below your cheekbones and along your jawline using the outline as your guide.',
+  contour:  'Apply contour below your cheekbones following the dashed guide. Start at the white dot near your ear and sweep inward toward your nose.',
 };
 
 const LIP_OUTER_LOOP = [61,185,40,39,37,0,267,269,270,409,291,375,321,405,314,17,84,181,91,146];
@@ -35,7 +35,6 @@ const LIP_SUBSTEP = [
   { label:'Final Check', badge:'Step 3 of 3', instruction:'Both lips filled — hold still while the camera checks your overall application.' },
 ];
 
-// Apple-of-cheek landmarks only — inner-eye-corner indices removed
 const BLUSH_CENTER_L = [205,50,116,123];
 const BLUSH_CENTER_R = [425,280,345,352];
 
@@ -96,6 +95,26 @@ function softArcPath(ctx, pts) {
 }
 function lmPts(lm, indices, W, H) { return indices.map(i=>({x:lm[i].x*W, y:lm[i].y*H})); }
 
+function detectFaceShape(lm) {
+  try {
+    const faceW  = Math.abs(lm[234].x - lm[454].x);
+    const faceH  = Math.abs(lm[10].y  - lm[152].y);
+    const jawW   = Math.abs(lm[172].x - lm[397].x);
+    const foreW  = Math.abs(lm[103].x - lm[332].x);
+    const cheekW = faceW || 0.001;
+    const hwRatio   = faceH  / cheekW;
+    const jawRatio  = jawW   / cheekW;
+    const foreRatio = foreW  / cheekW;
+    if (hwRatio   > 1.55)                          return 'oblong';
+    if (foreRatio > 0.95 && jawRatio < 0.68)       return 'heart';
+    if (foreRatio < 0.78 && jawRatio < 0.78)       return 'diamond';
+    if (hwRatio   < 1.18 && jawRatio > 0.82)       return 'round';
+    if (hwRatio   < 1.40 && jawRatio > 0.80)       return 'square';
+    return 'oval';
+  } catch(e) { return 'oval'; }
+}
+
+
 // ─────────────────────────────────────────
 //  DATA LOADING
 // ─────────────────────────────────────────
@@ -116,8 +135,12 @@ async function loadData() {
 function goTo(id) {
   document.querySelectorAll('.screen').forEach(s=>s.classList.remove('active'));
   document.getElementById(id)?.classList.add('active');
-  if (id==='screen-camera') initCamera();
-  else if (id!=='screen-step') stopStream();
+  if (id==='screen-camera') {
+    // Reset glasses reminder so it shows again on the next camera session
+    STATE.glassesWarned=false;
+    hideGlassesWarn();
+    initCamera();
+  } else if (id!=='screen-step') stopStream();
 }
 
 // ─────────────────────────────────────────
@@ -229,6 +252,83 @@ function checkStepLighting(video) {
 }
 
 // ─────────────────────────────────────────
+//  ACCESSORIES DETECTION
+//  Pixel-based: runs every 50 frames.
+//  Glasses  → lens area brighter than cheek.
+//  Mask     → mouth area desaturated + hue-shifted vs forehead.
+// ─────────────────────────────────────────
+function checkAccessories(image, lm) {
+  try {
+    const vW=image.width||640, vH=image.height||480;
+    const tmp=document.createElement('canvas'); tmp.width=vW; tmp.height=vH;
+    const tctx=tmp.getContext('2d'); tctx.drawImage(image,0,0,vW,vH);
+    function px(idxs){
+      let r=0,g=0,b=0,n=0;
+      idxs.forEach(i=>{
+        if(i>=lm.length) return;
+        const x=Math.round(lm[i].x*vW), y=Math.round(lm[i].y*vH);
+        if(x>=2&&x<vW-2&&y>=2&&y<vH-2){const d=tctx.getImageData(x,y,1,1).data;r+=d[0];g+=d[1];b+=d[2];n++;}
+      });
+      return n>0?{r:r/n,g:g/n,b:b/n,br:function(){return this.r*.299+this.g*.587+this.b*.114;}}:null;
+    }
+    const fh=px([10,9,151,107,336]); if(!fh) return [];
+    const fhBr=fh.br();
+    const found=[];
+
+    // ── Glasses detection ─────────────────────────────────────────
+    // Dark frames make the temple arms and nose bridge noticeably
+    // darker than surrounding skin. Reflective lenses make the eye
+    // area brighter. Either signature scores a point; ≥2 = glasses.
+    const cheek=px([116,345,50,280]);
+    const ckBr=cheek?cheek.br():fhBr;
+    let glassesScore=0;
+
+    // Bridge/nose-pad area: often shows dark frame element
+    const bridge=px([6,168,8]);
+    if(bridge && Math.abs(bridge.br()-fhBr)>26) glassesScore++;
+
+    // Left temple arm (between left ear and left eye)
+    const lTemple=px([127,162,21]);
+    if(lTemple && lTemple.br()<ckBr-20) glassesScore++;
+
+    // Right temple arm
+    const rTemple=px([356,389,251]);
+    if(rTemple && rTemple.br()<ckBr-20) glassesScore++;
+
+    // Lens zone: brighter (reflection) or darker (tinted/frame shadow) than forehead
+    const lensZone=px([159,386]);
+    if(lensZone && Math.abs(lensZone.br()-fhBr)>32) glassesScore++;
+
+    if(glassesScore>=2) found.push('glasses');
+
+    // ── Mask detection ────────────────────────────────────────────
+    // A mask covers the mouth/chin area — any strong color shift
+    // from forehead skin signals a foreign covering.
+    const mouth=px([0,17,61,291,13,14,152,148,176]);
+    if(mouth){
+      const mDev=Math.abs(mouth.r-fh.r)+Math.abs(mouth.g-fh.g)+Math.abs(mouth.b-fh.b);
+      const mSat=rgbSat(mouth.r,mouth.g,mouth.b);
+      if(mDev>55||(mSat<0.08&&mDev>32)) found.push('mask');
+    }
+    return found;
+  } catch(e){return [];}
+}
+
+function showGlassesWarn(msg) {
+  if(STATE.accDismissedAt && Date.now()-STATE.accDismissedAt<12000) return;
+  const el=document.getElementById('glasses-warn');
+  if(!el) return;
+  const sp=el.querySelector('span');
+  if(sp&&msg) sp.textContent=msg;
+  el.classList.remove('hide');
+}
+function hideGlassesWarn() {
+  const el=document.getElementById('glasses-warn');
+  if(el) el.classList.add('hide');
+  if(STATE) STATE.accDismissedAt=Date.now();
+}
+
+// ─────────────────────────────────────────
 //  MEDIAPIPE — DETECTION SCREEN
 // ─────────────────────────────────────────
 function startDetection() {
@@ -265,8 +365,21 @@ function onDetectResults(results) {
     drawLips   (ctx,lm,effW,effH,'rgba(220,130,120,0.78)','rgba(220,130,120,0.18)',2,false);
     drawBrows  (ctx,lm,effW,effH,'rgba(180,130,80,0.7)','rgba(160,110,60,0.15)',3);
     drawBlush  (ctx,lm,effW,effH,'rgba(230,150,140,0.55)','rgba(230,150,140,0.10)',2);
-    drawContour(ctx,lm,effW,effH,'rgba(190,140,80,0.6)','rgba(170,120,60,0.10)',2.5);
+    drawContour(ctx,lm,effW,effH,'rgba(190,140,80,0.6)','rgba(170,120,60,0.22)',2.5);
     ctx.restore();
+    // Accessory detection: runs every 50 frames (~1.7 s at 30 fps)
+    STATE.detectFrame=(STATE.detectFrame||0)+1;
+    if(STATE.detectFrame%50===1){
+      const acc=checkAccessories(results.image,lm);
+      if(acc.length>0){
+        const items=acc.includes('glasses')&&acc.includes('mask')?'glasses and face mask'
+                   :acc.includes('glasses')?'glasses':'face mask';
+        showGlassesWarn(`👓 Remove your ${items} for the most accurate AI analysis`);
+      } else {
+        const el=document.getElementById('glasses-warn');
+        if(el&&!el.classList.contains('hide')) el.classList.add('hide');
+      }
+    }
     if (!STATE.toneKey){
       const tone=detectToneFromImage(results.image,lm,W,H);
       if (tone){
@@ -348,17 +461,78 @@ function drawLips(ctx, lm, W, H, strokeColor, fillColor, lw, filterMode, subStep
 }
 
 // ─────────────────────────────────────────
-//  DRAW BROWS
+//  DRAW BROWS — beginner-friendly guide
+//  Soft fill + dashed outline + 6 upward
+//  hair strokes + gold start dot + tail
+//  arrow showing stroke direction.
 // ─────────────────────────────────────────
 function drawBrows(ctx, lm, W, H, sc, fc, lw) {
   [[BROW_LEFT_TOP,BROW_LEFT_BOTTOM],[BROW_RIGHT_TOP,BROW_RIGHT_BOTTOM]].forEach(([top,bot])=>{
+    const topPts = top.map(i=>({x:lm[i].x*W, y:lm[i].y*H}));
+    const botPts = bot.map(i=>({x:lm[i].x*W, y:lm[i].y*H}));
+    const allPts = [...topPts, ...[...botPts].reverse()];
+
+    const midT = topPts[Math.floor(topPts.length/2)];
+    const midB = botPts[Math.floor(botPts.length/2)];
+    const browH = Math.hypot(midT.x-midB.x, midT.y-midB.y);
+
+    // 1. Soft blurred fill — shows WHERE to apply colour
+    if (fc) {
+      ctx.save();
+      ctx.filter='blur(2.5px)';
+      ctx.beginPath(); softPolyPath(ctx,allPts);
+      ctx.fillStyle=fc; ctx.fill();
+      ctx.restore();
+    }
+
+    // 2. Dashed outline — boundary to stay within
+    ctx.save();
+    ctx.beginPath(); softPolyPath(ctx,allPts);
+    ctx.strokeStyle=sc; ctx.lineWidth=lw*0.8; ctx.lineJoin='round';
+    ctx.setLineDash([lw*2.5,lw*1.5]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore();
+
+    // 3. Short upward hair strokes — shows HOW to fill
+    const N=6;
+    for (let s=0;s<N;s++){
+      const t=(s+0.5)/N;
+      const ti=Math.min(Math.round(t*(topPts.length-1)),topPts.length-1);
+      const bi=Math.min(Math.round(t*(botPts.length-1)),botPts.length-1);
+      const mx=(topPts[ti].x+botPts[bi].x)/2;
+      const my=(topPts[ti].y+botPts[bi].y)/2;
+      const ta=Math.min(ti+1,topPts.length-1), tb=Math.max(ti-1,0);
+      const browAngle=Math.atan2(topPts[ta].y-topPts[tb].y, topPts[ta].x-topPts[tb].x);
+      const hairAngle=browAngle-Math.PI/2;
+      const sLen=Math.max(browH*1.4, lw*3);
+      ctx.save();
+      ctx.translate(mx,my); ctx.rotate(hairAngle);
+      ctx.beginPath(); ctx.moveTo(0,-sLen*0.62); ctx.lineTo(0,sLen*0.38);
+      ctx.strokeStyle=sc; ctx.lineWidth=lw*0.48;
+      ctx.lineCap='round'; ctx.globalAlpha=0.65; ctx.stroke();
+      ctx.restore();
+    }
+
+    // 4. Gold start dot at inner corner
+    ctx.save();
     ctx.beginPath();
-    ctx.moveTo(lm[top[0]].x*W,lm[top[0]].y*H);
-    top.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
-    [...bot].reverse().forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
-    ctx.closePath();
-    if (fc){ctx.fillStyle=fc;ctx.fill();}
-    ctx.strokeStyle=sc; ctx.lineWidth=lw; ctx.stroke();
+    ctx.arc(topPts[0].x,topPts[0].y,Math.max(2.5,lw*0.95),0,Math.PI*2);
+    ctx.fillStyle='#ffe066'; ctx.fill();
+    ctx.restore();
+
+    // 5. Arrow at tail showing direction
+    const n=topPts.length;
+    if (n>=2){
+      const tail=topPts[n-1], prev=topPts[n-2];
+      const ang=Math.atan2(tail.y-prev.y, tail.x-prev.x);
+      const ah=lw*2.2;
+      ctx.save();
+      ctx.translate(tail.x,tail.y); ctx.rotate(ang);
+      ctx.beginPath();
+      ctx.moveTo(-ah,-ah*0.55); ctx.lineTo(0,0); ctx.lineTo(-ah,ah*0.55);
+      ctx.strokeStyle=sc; ctx.lineWidth=lw*0.7;
+      ctx.lineCap='round'; ctx.lineJoin='round'; ctx.stroke();
+      ctx.restore();
+    }
   });
 }
 
@@ -375,7 +549,6 @@ function drawBlush(ctx, lm, W, H, sc, fc, lw, coverage) {
   const visL = Math.min(1, Math.max(0, (noseRatio - 0.15) / 0.22));
   const visR = Math.min(1, Math.max(0, (0.85 - noseRatio) / 0.22));
 
-  // ← THESE TWO LINES WERE MISSING IN YOUR VERSION
   const rx = faceRef * 0.155;
   const ry = faceRef * 0.072;
 
@@ -458,19 +631,130 @@ function drawBlush(ctx, lm, W, H, sc, fc, lw, coverage) {
 }
 
 // ─────────────────────────────────────────
-//  DRAW CONTOUR
+//  NOSE CONTOUR GUIDE
+//  Two slim dashed lines along the sides
+//  of the nose bridge — universal for all
+//  face shapes.
+// ─────────────────────────────────────────
+function drawNoseContourGuide(ctx, lm, W, H, sc, fc, lw) {
+  const bridge = { x:lm[168].x*W, y:lm[168].y*H };
+  const tip    = { x:lm[4].x*W,   y:lm[4].y*H   };
+  const alarL  = { x:lm[49].x*W,  y:lm[49].y*H  };
+  const alarR  = { x:lm[279].x*W, y:lm[279].y*H };
+  const nH     = Math.abs(tip.y - bridge.y);
+  const off    = nH * 0.10;
+
+  [
+   { p0:{x:bridge.x-off, y:bridge.y+nH*0.08}, ctrl:{x:alarL.x-off*0.4, y:bridge.y+nH*0.50}, p2:{x:alarL.x, y:alarL.y} },
+    { p0:{x:bridge.x+off, y:bridge.y+nH*0.08}, ctrl:{x:alarR.x+off*0.4, y:bridge.y+nH*0.50}, p2:{x:alarR.x, y:alarR.y} },
+  ].forEach(({p0,ctrl,p2})=>{
+    if (fc) {
+      ctx.save(); ctx.filter='blur(2px)';
+      ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.quadraticCurveTo(ctrl.x,ctrl.y,p2.x,p2.y);
+      ctx.strokeStyle=fc; ctx.lineWidth=lw*4; ctx.lineCap='round'; ctx.stroke();
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.quadraticCurveTo(ctrl.x,ctrl.y,p2.x,p2.y);
+    ctx.strokeStyle=sc; ctx.lineWidth=lw*0.85; ctx.lineCap='round';
+    ctx.setLineDash([lw*2,lw*1.5]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore();
+  });
+}
+
+// ─────────────────────────────────────────
+//  DRAW CONTOUR — face-shape aware guide
+//  Shows nose contour (universal) plus
+//  cheek / jaw sweep paths tailored to the
+//  detected face shape.
+//  Shapes: oval · round · oblong · heart ·
+//          diamond · square
 // ─────────────────────────────────────────
 function drawContour(ctx, lm, W, H, sc, fc, lw) {
-  [JAW_LEFT,JAW_RIGHT].forEach(idx=>{
-    ctx.beginPath(); ctx.moveTo(lm[idx[0]].x*W,lm[idx[0]].y*H);
-    idx.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
-    ctx.closePath(); if(fc){ctx.fillStyle=fc;ctx.fill();} ctx.strokeStyle=sc; ctx.lineWidth=lw; ctx.stroke();
-  });
-  [CHEEK_HOLLOW_L,CHEEK_HOLLOW_R].forEach(idx=>{
-    ctx.beginPath(); ctx.moveTo(lm[idx[0]].x*W,lm[idx[0]].y*H);
-    idx.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
-    ctx.closePath(); ctx.strokeStyle=sc; ctx.lineWidth=lw*0.8; ctx.stroke();
-  });
+  const shape = detectFaceShape(lm);
+  const faceH = Math.abs(lm[10].y  - lm[152].y) * H;
+  const faceW = Math.abs(lm[234].x - lm[454].x) * W;
+
+  function P(i){ return {x:lm[i].x*W, y:lm[i].y*H}; }
+
+  // Reusable quadratic bezier sweep with blurred hint + dashed stroke + arrow + dot
+  function sweepStroke(p0, ctrl, p2) {
+    if (fc) {
+      ctx.save(); ctx.filter='blur(4px)';
+      ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.quadraticCurveTo(ctrl.x,ctrl.y,p2.x,p2.y);
+      ctx.strokeStyle=fc; ctx.lineWidth=lw*9; ctx.lineCap='round'; ctx.stroke();
+      ctx.restore();
+    }
+    ctx.save();
+    ctx.beginPath(); ctx.moveTo(p0.x,p0.y); ctx.quadraticCurveTo(ctrl.x,ctrl.y,p2.x,p2.y);
+    ctx.strokeStyle=sc; ctx.lineWidth=lw*1.4; ctx.lineCap='round';
+    ctx.setLineDash([lw*4,lw*2.5]); ctx.stroke(); ctx.setLineDash([]);
+    ctx.restore();
+
+    const ah=lw*2.8, ang=Math.atan2(p2.y-ctrl.y, p2.x-ctrl.x);
+    ctx.save(); ctx.translate(p2.x,p2.y); ctx.rotate(ang);
+    ctx.beginPath(); ctx.moveTo(-ah,-ah*0.52); ctx.lineTo(0,0); ctx.lineTo(-ah,ah*0.52);
+    ctx.strokeStyle=sc; ctx.lineWidth=lw*0.9; ctx.lineCap='round'; ctx.lineJoin='round'; ctx.stroke();
+    ctx.restore();
+    ctx.save(); ctx.beginPath(); ctx.arc(p0.x,p0.y,Math.max(2.5,lw*0.95),0,Math.PI*2);
+    ctx.fillStyle='rgba(255,255,255,0.92)'; ctx.fill(); ctx.restore();
+  }
+
+  // ① Nose sides — always shown
+  drawNoseContourGuide(ctx, lm, W, H, sc, fc, lw);
+
+  // ② Cheek / jaw strokes — per face shape
+  if (shape==='oval') {
+    // Classic cheekbone hollow sweep: ear → upper-cheek → hollow
+    [{s:234,c:116,e:132},{s:454,c:345,e:361}].forEach(({s,c,e})=>{
+      const p0=P(s), ctrl=P(c), pe=P(e);
+      sweepStroke(p0, ctrl, {x:p0.x+0.65*(pe.x-p0.x), y:p0.y+0.65*(pe.y-p0.y)+faceH*0.01});
+    });
+  }
+
+  if (shape==='round') {
+    // Long sweep temple → cheek-mid → lower jaw to slim sides
+    [{s:234,c:116,e:172},{s:454,c:345,e:397}].forEach(({s,c,e})=>{
+      sweepStroke(P(s), P(c), P(e));
+    });
+  }
+
+  if (shape==='oblong') {
+    // Cheek sweep + short forehead-corner marks to add visual width
+    [{s:234,c:116,e:132},{s:454,c:345,e:361}].forEach(({s,c,e})=>{
+      const p0=P(s), ctrl=P(c), pe=P(e);
+      sweepStroke(p0, ctrl, {x:p0.x+0.65*(pe.x-p0.x), y:p0.y+0.65*(pe.y-p0.y)+faceH*0.01});
+    });
+    [{i:103,dir:1},{i:332,dir:-1}].forEach(({i,dir})=>{
+      const sp=P(i);
+      sweepStroke(sp, {x:sp.x+dir*faceW*0.06,y:sp.y+faceH*0.03}, {x:sp.x+dir*faceW*0.13,y:sp.y+faceH*0.06});
+    });
+  }
+
+  if (shape==='heart') {
+    // Jaw sides: from cheek outward down toward chin to widen jaw visually
+    [{s:234,c:172,e:150},{s:454,c:397,e:379}].forEach(({s,c,e})=>{
+      sweepStroke(P(s), P(c), P(e));
+    });
+  }
+
+  if (shape==='diamond') {
+    // Forehead sides (down) + lower jaw sides to balance wide cheekbones
+    [{s:103,c:234,e:116},{s:332,c:454,e:345}].forEach(({s,c,e})=>{
+      sweepStroke(P(s), P(c), P(e));
+    });
+    [{s:116,c:172,e:150},{s:345,c:397,e:379}].forEach(({s,c,e})=>{
+      sweepStroke(P(s), P(c), P(e));
+    });
+  }
+
+  if (shape==='square') {
+    // Like oval but extended to jaw corner to soften angular jaw
+    [{s:234,c:116,e:172},{s:454,c:345,e:397}].forEach(({s,c,e})=>{
+      sweepStroke(P(s), P(c), P(e));
+    });
+  }
 }
 
 // ─────────────────────────────────────────
@@ -507,7 +791,6 @@ function showShades() {
   const map={lips:'lips',eyebrows:'eyebrows',cheeks:'blush',contour:'contour'};
   const focal=map[STATE.focal]||STATE.focal;
   document.getElementById('focal-badge-label').textContent=STATE.focalData?.[STATE.focal]?.label||STATE.focal;
-  
   const grid=document.getElementById('shade-grid'); grid.innerHTML='';
   STEPS.forEach(step=>{
     const shade=tone[step]; if (!shade) return;
@@ -518,6 +801,7 @@ function showShades() {
     grid.appendChild(card);
   });
   goTo('screen-shades');
+  prewarmTryOnMesh();
 }
 
 // ─────────────────────────────────────────
@@ -569,11 +853,9 @@ function renderStep(index) {
   document.getElementById('btn-retry').style.display='none';
   STATE.checkPending=false;
 
-  // Reset blush smoother on every step change
   STATE.blushLm         = null;
   STATE.blushFrameCount = 0;
 
-  // Skip button
   let skipBtn=document.getElementById('btn-skip');
   if (!skipBtn){
     skipBtn=document.createElement('button'); skipBtn.id='btn-skip'; skipBtn.textContent='Skip step →';
@@ -613,22 +895,20 @@ function onStepResults(results) {
   const lm=results.multiFaceLandmarks[0];
   STATE.lastLandmarks=lm;
 
-  // Adaptive 4-tier EMA — snaps instantly on large head moves
-  let headDelta = 1; // default high so first frame initialises instantly
+  let headDelta = 1;
   if (!STATE.smoothedLm||STATE.smoothedLm.length!==lm.length){
     STATE.smoothedLm=lm.map(p=>({x:p.x,y:p.y}));
   } else {
     let maxDelta=0;
     [1,234,454,10,152].forEach(i=>{const dx=lm[i].x-STATE.smoothedLm[i].x,dy=lm[i].y-STATE.smoothedLm[i].y;maxDelta=Math.max(maxDelta,Math.sqrt(dx*dx+dy*dy));});
-    headDelta = maxDelta; // measured BEFORE update — true head movement this frame
-    let ALPHA;
-    if      (maxDelta>0.035) ALPHA=1.00;
-    else if (maxDelta>0.012) ALPHA=0.92;
-    else if (maxDelta>0.005) ALPHA=0.65;
-    else                     ALPHA=0.30;
+    headDelta = maxDelta;
+    // Cap at 0.75 — prevents guide from snapping on fast head moves
+    const ALPHA = maxDelta>0.050 ? 0.75 : maxDelta>0.020 ? 0.58 : maxDelta>0.008 ? 0.40 : 0.20;
     STATE.smoothedLm=STATE.smoothedLm.map((s,i)=>({x:s.x+ALPHA*(lm[i].x-s.x),y:s.y+ALPHA*(lm[i].y-s.y)}));
   }
   const dlm=STATE.smoothedLm;
+
+  const isFrontalStep = lm[1].x > 0.20 && lm[1].x < 0.80;
 
   const fMap={lips:'lips',eyebrows:'eyebrows',cheeks:'blush',contour:'contour'};
   const cs=STEPS[STATE.currentStep];
@@ -638,32 +918,21 @@ function onStepResults(results) {
   const sc=hexToRgba(hex,0.92);
   const fc=hexToRgba(hex,0.30);
 
-  // ── Blush-specific landmark smoother ──────────────────────────
-  // A second EMA that runs slower than the main one when the head is
-  // still — so a brush/hand sweeping the cheek doesn't drag the guide.
-  // headDelta was captured BEFORE the main EMA update, so it truly
-  // reflects head movement, not hand-over-cheek noise.
   if (cs==='blush') {
-    // Landmarks that drawBlush reads
     const BLUSH_IDX = [1, 10, 152, 205, 50, 116, 123, 425, 280, 345, 352, 234, 454];
-
     if (!STATE.blushLm) {
-      STATE.blushLm = dlm.map(p => ({x:p.x, y:p.y}));  // first frame: snap
+      STATE.blushLm = dlm.map(p => ({x:p.x, y:p.y}));
     } else {
       STATE.blushFrameCount++;
-      const warmUp = STATE.blushFrameCount < 20;   // ~0.7 s warm-up: converge fast
-
+      const warmUp = STATE.blushFrameCount < 20;
       const A = warmUp             ? 0.55
               : headDelta > 0.040  ? 1.00
               : headDelta > 0.001  ? 0.09 + (headDelta / 0.040) * 0.85
               :                      0.08;
-
-      // Blush-relevant landmarks: adaptive EMA (old value in STATE.blushLm)
       BLUSH_IDX.forEach(i => {
         STATE.blushLm[i].x += A * (dlm[i].x - STATE.blushLm[i].x);
         STATE.blushLm[i].y += A * (dlm[i].y - STATE.blushLm[i].y);
       });
-      // Everything else: mirror the main smoother directly
       dlm.forEach((p,i) => {
         if (!BLUSH_IDX.includes(i)) { STATE.blushLm[i].x = p.x; STATE.blushLm[i].y = p.y; }
       });
@@ -674,19 +943,29 @@ function onStepResults(results) {
 
   ctx.save(); ctx.translate(-ox,-oy);
 
-  const blushCov=cs==='blush'?getBlushCoverage(document.getElementById('step-video'),blm):undefined;
+  if (isFrontalStep) {
+    const blushCov=cs==='blush'?getBlushCoverage(document.getElementById('step-video'),blm):undefined;
 
-  if      (cs==='lips')     drawLips   (ctx,dlm,effW,effH,sc,fc,3.5,true,STATE.lipSubStep);
-  else if (cs==='blush')    drawBlush  (ctx,dlm,effW,effH,sc,fc,4,blushCov);
-  else if (cs==='eyebrows') drawBrows  (ctx,dlm,effW,effH,sc,fc,4.5);
-  else if (cs==='contour')  drawContour(ctx,dlm,effW,effH,sc,fc,4);
+    if      (cs==='lips')     drawLips   (ctx,dlm,effW,effH,sc,fc,3.5,true,STATE.lipSubStep);
+    else if (cs==='blush')    drawBlush  (ctx,dlm,effW,effH,sc,fc,4,blushCov);
+    else if (cs==='eyebrows') drawBrows  (ctx,dlm,effW,effH,sc,fc,4.5);
+    else if (cs==='contour')  drawContour(ctx,dlm,effW,effH,sc,fc,4);
 
-  if (cs===fs&&cs!=='lips'){
-    const gc=hexToRgba(hex,1.0);
-    ctx.save(); ctx.shadowColor=hex; ctx.shadowBlur=18;
-     if      (cs==='blush')    drawBlush  (ctx,dlm,effW,effH,gc,null,2,blushCov);
-    else if (cs==='eyebrows') drawBrows  (ctx,dlm,effW,effH,gc,null,2.5);
-    else if (cs==='contour')  drawContour(ctx,dlm,effW,effH,gc,null,2);
+    if (cs===fs&&cs!=='lips'){
+      const gc=hexToRgba(hex,1.0);
+      ctx.save(); ctx.shadowColor=hex; ctx.shadowBlur=18;
+      if      (cs==='blush')    drawBlush  (ctx,dlm,effW,effH,gc,null,2,blushCov);
+      else if (cs==='eyebrows') drawBrows  (ctx,dlm,effW,effH,gc,null,2.5);
+      else if (cs==='contour')  drawContour(ctx,dlm,effW,effH,gc,null,2);
+      ctx.restore();
+    }
+  } else {
+    // Face turned — show gentle prompt only
+    ctx.save();
+    ctx.font='bold 13px Jost,sans-serif';
+    ctx.fillStyle='rgba(255,255,255,0.70)';
+    ctx.textAlign='center';
+    ctx.fillText('Face the camera for guide overlay', W/2+ox, H*0.08+oy);
     ctx.restore();
   }
   ctx.restore();
@@ -894,20 +1173,45 @@ function analyzeZoneColor(video, lm, step, sampleOverride) {
       const satIncrease=rgbSat(r,g,b)-rgbSat(sk.r,sk.g,sk.b);
       const pinkShift=(r-b)-(sk.r-sk.b);
       const warmShift=(r-g)-(sk.r-sk.g);
-      const detected=br>35&&br<240&&dev>10&&satIncrease>0.025&&(pinkShift>6||warmShift>6);
+      const absSat=rgbSat(r,g,b);
+      // All conditions must hold — guards against lighting variation and natural flush
+      const detected=br>35&&br<235&&dev>42&&satIncrease>0.10&&absSat>0.30&&(pinkShift>26||warmShift>26);
       if (!detected){
         let msg;
-        if(dev<=10) msg='No blush detected — apply colour to the apples of your cheeks within the guide.';
-        else if(satIncrease<=0.025) msg='Blush too sheer — build up a little more colour and blend within the outline.';
+       if(dev<=42||absSat<=0.30) msg='No blush detected — apply colour to the apples of your cheeks within the guide.';
+        else if(satIncrease<=0.10) msg='Blush too sheer — build up a little more colour and blend within the outline.';
         else msg='Colour not reading as blush — try a pinker or rosier shade and blend upward along the guide.';
         return{passed:false,message:msg};
       }
       return{passed:true,message:goodMessages.blush};
     }
 
+    if (step==='contour'){
+      // Sample forehead as skin reference (not a hardcoded tone lookup)
+      const skinRef=sampleLandmarks([10,9,151,107,336]);
+      const sk=skinRef??toneToRGB(STATE.toneKey||'medium_warm');
+      const skBr=sk.r*.299+sk.g*.587+sk.b*.114;
+      const dev=Math.abs(r-sk.r)+Math.abs(g-sk.g)+Math.abs(b-sk.b);
+      const darkShift=skBr-br; // contour must darken the zone relative to forehead
+      const satIncrease=rgbSat(r,g,b)-rgbSat(sk.r,sk.g,sk.b);
+      // Requires the zone to be noticeably darker (shadow product) AND more saturated (brown tone)
+      const passed=br>20&&br<230&&dev>50&&darkShift>18&&satIncrease>0.06;
+      return{passed,message:passed?goodMessages.contour:tipMessages.contour};
+    }
+
+    if (step==='eyebrows'){
+      const skinRef=sampleLandmarks([10,9,151]);
+      const sk=skinRef??toneToRGB(STATE.toneKey||'medium_warm');
+      const skBr=sk.r*.299+sk.g*.587+sk.b*.114;
+      const dev=Math.abs(r-sk.r)+Math.abs(g-sk.g)+Math.abs(b-sk.b);
+      const darkShift=skBr-br; // eyebrows must darken the brow zone
+      const passed=br>15&&br<230&&dev>48&&darkShift>22;
+      return{passed,message:passed?goodMessages.eyebrows:tipMessages.eyebrows};
+    }
+
     const sk=toneToRGB(STATE.toneKey||'medium_warm');
     const dev=Math.abs(r-sk.r)+Math.abs(g-sk.g)+Math.abs(b-sk.b);
-    const passed=br>35&&br<235&&dev>28&&(rgbSat(r,g,b)-rgbSat(sk.r,sk.g,sk.b))>0.025;
+    const passed=br>35&&br<235&&dev>48&&(rgbSat(r,g,b)-rgbSat(sk.r,sk.g,sk.b))>0.06;
     return{passed,message:passed?goodMessages[step]:tipMessages[step]};
   } catch(e){return{passed:true,message:goodMessages[step]};}
 }
@@ -928,8 +1232,8 @@ function getBlushCoverage(video, lm) {
 
 function toneToRGB(k){return{light_warm:{r:225,g:192,b:167},light_cool:{r:218,g:190,b:180},medium_warm:{r:190,g:150,b:120},medium_cool:{r:178,g:152,b:144},dark_warm:{r:133,g:100,b:70},dark_cool:{r:122,g:98,b:93}}[k]||{r:185,g:148,b:122};}
 
-const goodMessages={lips:'Great lip color! Your lips look well-defined and beautiful.',blush:'Beautiful blush placement! Your cheeks are glowing naturally.',eyebrows:'Your brows look well-defined and perfectly framed!',contour:'Great contour! Your jawline and cheekbones look sculpted.'};
-const tipMessages={lips:'Lipstick not detected yet. Make sure the area is well-lit, fill within the outline, and hold still for a moment.',blush:'Apply a little more blush to the apples of your cheeks and blend upward.',eyebrows:'Fill in the brows more with short, upward strokes then check again.',contour:'Build up the contour a little more along the jawline and blend the edges.'};
+const goodMessages={lips:'Great lip color! Your lips look well-defined and beautiful.',blush:'Beautiful blush placement! Your cheeks are glowing naturally.',eyebrows:'Your brows look well-defined and perfectly framed!',contour:'Great contour! Your cheekbones look beautifully sculpted.'};
+const tipMessages={lips:'Lipstick not detected yet. Make sure the area is well-lit, fill within the outline, and hold still for a moment.',blush:'Apply a little more blush to the apples of your cheeks and blend upward.',eyebrows:'Fill in the brows more with short, upward strokes then check again.',contour:'Build up the contour a little more along the cheekbone hollow and blend the edges.'};
 
 function showFeedback(passed, message) {
   const area=document.getElementById('feedback-area');
@@ -996,12 +1300,23 @@ document.addEventListener('DOMContentLoaded',()=>{loadData();initParticles();});
 // ─────────────────────────────────────────
 //  VIRTUAL TRY-ON
 // ─────────────────────────────────────────
-// _toLastLm caches landmarks so the makeup overlay redraws every rAF tick
-// independent of FaceMesh processing speed (~10-20 fps).
 let _toMesh=null, _toStream=null, _toRaf=null, _toLastLm=null, _toStepOnly=null;
 
+// Pre-warms FaceMesh so the wasm model downloads while the user reads
+// the shades screen — eliminates lag on first TRY IT ON tap.
+function prewarmTryOnMesh() {
+  if (_toMesh) return;
+  _toMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
+  _toMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.6,minTrackingConfidence:.6});
+  _toMesh.onResults(onTryOnResults);
+  try {
+    const b=document.createElement('canvas'); b.width=1; b.height=1;
+    _toMesh.send({image:b}).catch(()=>{});
+  } catch(e){}
+}
+
 function startStepTryOn() {
-  // ── 1. Tear down any running try-on session ──────────────────────
+  // Tear down any running try-on session
   if(_toRaf)   { cancelAnimationFrame(_toRaf); _toRaf=null; }
   if(_toMesh)  { try{_toMesh.close();}catch(e){} _toMesh=null; }
   if(_toStream){ _toStream.getTracks().forEach(t=>t.stop()); _toStream=null; }
@@ -1011,11 +1326,10 @@ function startStepTryOn() {
   const _tl=document.getElementById('tryon-loading');
   if(_tl) _tl.style.display='flex';
 
-  // ── 2. Set the step-only filter BEFORE startTryOn creates the loop ─
+  // Set the step-only filter BEFORE startTryOn creates the render loop
   const step  = STEPS[STATE.currentStep];
   _toStepOnly = step;
 
-  // ── 3. Update modal labels ──────────────────────────────────────
   const label     = STEP_LABELS[step] || step;
   const titleEl   = document.getElementById('tryon-modal-title');
   const captionEl = document.getElementById('tryon-modal-caption');
@@ -1031,9 +1345,12 @@ function startTryOn() {
   const loading=document.getElementById('tryon-loading');
   if(_toStream) return; // already live
 
-  _toMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
-  _toMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.6,minTrackingConfidence:.6});
-  _toMesh.onResults(onTryOnResults);
+  // Reuse pre-warmed mesh if available (no lag); create fresh if not
+  if(!_toMesh){
+    _toMesh=new FaceMesh({locateFile:f=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${f}`});
+    _toMesh.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:.6,minTrackingConfidence:.6});
+    _toMesh.onResults(onTryOnResults);
+  }
 
   navigator.mediaDevices.getUserMedia({video:{width:{ideal:640},height:{ideal:480},facingMode:'user'}})
   .then(stream=>{
@@ -1053,11 +1370,8 @@ function startTryOn() {
       if(canvas.width!==vW) canvas.width=vW;
       if(canvas.height!==vH) canvas.height=vH;
       const ctx=canvas.getContext('2d');
-      // Draw live video every frame — smooth preview regardless of FaceMesh speed
       ctx.drawImage(video,0,0,vW,vH);
-      // Re-apply last known makeup overlay between FaceMesh results
       if(_toLastLm) drawVirtualMakeup(ctx,_toLastLm,vW,vH);
-      // Send to FaceMesh every 3rd frame (~20 fps)
       if(!sending && fc++%3===0){
         sending=true;
         _toMesh.send({image:video}).finally(()=>{ sending=false; });
@@ -1076,7 +1390,6 @@ function stopTryOn() {
   const video=document.getElementById('tryon-video');
   if(video) video.srcObject=null;
   _toLastLm=null;
-  // Reset step-specific state and modal labels
   _toStepOnly=null;
   const titleEl   = document.getElementById('tryon-modal-title');
   const captionEl = document.getElementById('tryon-modal-caption');
@@ -1086,15 +1399,15 @@ function stopTryOn() {
   if(loading) loading.style.display='flex';
 }
 
-// Stores landmarks only — drawing happens every rAF tick in loop() above.
 function onTryOnResults(results) {
   _toLastLm=results.multiFaceLandmarks?.[0]||null;
 }
 
-// ── Virtual makeup renderer ────────────────────────────────────────
-// Rendering order (back → front): contour → blush → brows → lips
-// Uses 'multiply' composite so each layer darkens / tints the skin
-// pixels naturally — like real pigment on skin.
+// ─────────────────────────────────────────
+//  VIRTUAL MAKEUP RENDERER
+//  Render order (back→front): contour →
+//  blush → eyebrows → lips
+// ─────────────────────────────────────────
 function drawVirtualMakeup(ctx, lm, W, H) {
   const tone=STATE.shades?.[STATE.toneKey||'medium_warm'];
   if(!tone) return;
@@ -1105,9 +1418,9 @@ function drawVirtualMakeup(ctx, lm, W, H) {
   }
 
   const FOCAL_MULT = {
-    lips:     { lips:1.00, blush:0.38, eyebrows:0.50, contour:0.30 },
-    eyebrows: { lips:0.38, blush:0.32, eyebrows:1.00, contour:0.45 },
-    cheeks:   { lips:0.38, blush:1.00, eyebrows:0.50, contour:0.30 },
+    lips:     { lips:1.00, blush:0.38, eyebrows:0.50, contour:0.55 },
+    eyebrows: { lips:0.38, blush:0.32, eyebrows:1.00, contour:0.60 },
+    cheeks:   { lips:0.38, blush:1.00, eyebrows:0.50, contour:0.55 },
     contour:  { lips:0.38, blush:0.32, eyebrows:0.50, contour:1.00 },
   };
   const focalMult = FOCAL_MULT[STATE.focal] || FOCAL_MULT.lips;
@@ -1120,41 +1433,64 @@ function drawVirtualMakeup(ctx, lm, W, H) {
   const faceRef=Math.max(faceW,faceH*0.80);
   const nosePx=lm[1].x*W, nosePy=lm[1].y*H;
 
-  // ── Contour: sculpt jaw + cheek hollows + nose bridge ──────────
+  // ── Contour: cheek hollows + jaw sides + nose sides ──────────
+  // Uses pure radial-gradient blobs (no ctx.filter — reliable cross-browser).
   if(tone.contour?.hex && mult.contour>0.05){
     const {r,g,b}=rgb(tone.contour.hex);
+    const a=mult.contour;
     ctx.save();
-    ctx.globalCompositeOperation='multiply';
-    ctx.fillStyle=`rgb(${r},${g},${b})`;
-    ctx.filter='blur(14px)';
-    ctx.globalAlpha=0.72*mult.contour;
-    [JAW_LEFT,JAW_RIGHT].forEach(idx=>{
-      ctx.beginPath(); ctx.moveTo(lm[idx[0]].x*W,lm[idx[0]].y*H);
-      idx.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
-      ctx.closePath(); ctx.fill();
-    });
-    
-    ctx.filter='blur(14px)';
-    ctx.globalAlpha=0.60*mult.contour;
-    [CHEEK_HOLLOW_L,CHEEK_HOLLOW_R].forEach(idx=>{
-      ctx.beginPath(); ctx.moveTo(lm[idx[0]].x*W,lm[idx[0]].y*H);
-      idx.slice(1).forEach(i=>ctx.lineTo(lm[i].x*W,lm[i].y*H));
-      ctx.closePath(); ctx.fill();
+    ctx.globalCompositeOperation='source-over';
+
+    // Zone 1 — Cheek hollows: soft circular gradient blobs
+    [234,454].forEach(temple=>{
+      const tx=lm[temple].x*W, ty=lm[temple].y*H;
+      const cx=nosePx+0.58*(tx-nosePx);
+      const cy=nosePy+0.60*(ty-nosePy)+faceRef*0.04;
+      const gradR=faceRef*0.28;
+      const grad=ctx.createRadialGradient(cx,cy,0, cx,cy,gradR);
+      grad.addColorStop(0,    `rgba(${r},${g},${b},${(0.80*a).toFixed(3)})`);
+      grad.addColorStop(0.28, `rgba(${r},${g},${b},${(0.62*a).toFixed(3)})`);
+      grad.addColorStop(0.55, `rgba(${r},${g},${b},${(0.30*a).toFixed(3)})`);
+      grad.addColorStop(0.82, `rgba(${r},${g},${b},${(0.08*a).toFixed(3)})`);
+      grad.addColorStop(1,    `rgba(${r},${g},${b},0)`);
+      ctx.fillStyle=grad;
+      ctx.beginPath(); ctx.arc(cx,cy,gradR,0,Math.PI*2); ctx.fill();
     });
 
-    ctx.filter='blur(7px)';
-    ctx.globalAlpha=0.50*mult.contour;
-    const bridgePt={x:lm[6].x*W,   y:lm[6].y*H};
-    const tipPt   ={x:lm[4].x*W,   y:lm[4].y*H};
-    const alarL   ={x:lm[49].x*W,  y:lm[49].y*H};
-    const alarR   ={x:lm[279].x*W, y:lm[279].y*H};
+    // Zone 2 — Jaw sides: diffuse oval blobs
+    [[58,172,136,150,149],[288,397,365,379,378]].forEach(idxArr=>{
+      const pts=idxArr.map(i=>({x:lm[i].x*W,y:lm[i].y*H}));
+      const cx=pts.reduce((s,p)=>s+p.x,0)/pts.length;
+      const cy=pts.reduce((s,p)=>s+p.y,0)/pts.length;
+      const gradR=faceW*0.17;
+      const grad=ctx.createRadialGradient(cx,cy,0, cx,cy,gradR);
+      grad.addColorStop(0,    `rgba(${r},${g},${b},${(0.38*a).toFixed(3)})`);
+      grad.addColorStop(0.50, `rgba(${r},${g},${b},${(0.18*a).toFixed(3)})`);
+      grad.addColorStop(0.80, `rgba(${r},${g},${b},${(0.05*a).toFixed(3)})`);
+      grad.addColorStop(1,    `rgba(${r},${g},${b},0)`);
+      ctx.fillStyle=grad;
+      ctx.beginPath(); ctx.ellipse(cx,cy,faceW*0.15,faceRef*0.075,0,0,Math.PI*2); ctx.fill();
+    });
+
+    // Zone 3 — Nose sides: slim shadow strips
+    ctx.filter='blur(6px)';
+    ctx.globalAlpha=0.45*a;
+    ctx.fillStyle=`rgb(${r},${g},${b})`;
+    const bridgePt={x:lm[6].x*W, y:lm[6].y*H};
+    const tipPt   ={x:lm[4].x*W, y:lm[4].y*H};
+    const alarL   ={x:lm[49].x*W,y:lm[49].y*H};
+    const alarR   ={x:lm[279].x*W,y:lm[279].y*H};
     const nW=Math.abs(alarR.x-alarL.x);
     const nH=Math.abs(tipPt.y-bridgePt.y);
     const midY=(bridgePt.y+tipPt.y)/2;
-    // Left shadow strip (inside the left alar, running the bridge height)
-    ctx.beginPath(); ctx.ellipse(alarL.x-nW*0.07, midY, nW*0.09, nH*0.52, 0, 0, Math.PI*2); ctx.fill();
-    // Right shadow strip
-    ctx.beginPath(); ctx.ellipse(alarR.x+nW*0.07, midY, nW*0.09, nH*0.52, 0, 0, Math.PI*2); ctx.fill();
+    [{cx:alarL.x-nW*0.07,cy:midY},{cx:alarR.x+nW*0.07,cy:midY}].forEach(({cx,cy})=>{
+      const grad=ctx.createRadialGradient(cx,cy,0, cx,cy,nW*0.14);
+      grad.addColorStop(0,    `rgba(${r},${g},${b},${(0.46*a).toFixed(3)})`);
+      grad.addColorStop(0.55, `rgba(${r},${g},${b},${(0.18*a).toFixed(3)})`);
+      grad.addColorStop(1,    `rgba(${r},${g},${b},0)`);
+      ctx.fillStyle=grad;
+      ctx.beginPath(); ctx.ellipse(cx,cy,nW*0.11,nH*0.52,0,0,Math.PI*2); ctx.fill();
+    });
 
     ctx.restore();
   }
@@ -1204,30 +1540,25 @@ function drawVirtualMakeup(ctx, lm, W, H) {
     ctx.restore();
   }
 
-  // ── Lips: full outer contour — one unified shape ───────────────
+  // ── Lips: full outer shape with inner punch-out ────────────────
   if(tone.lips?.hex && mult.lips>0.05){
     const {r,g,b}=rgb(tone.lips.hex);
-    // Build lip layer on offscreen canvas so destination-out is sandboxed
     const lc=document.createElement('canvas'); lc.width=W; lc.height=H;
     const lx=lc.getContext('2d');
-    // 1. Fill outer contour with soft blur
     lx.filter='blur(1.2px)';
     lx.fillStyle=`rgb(${r},${g},${b})`;
     const outerPts=lmPts(lm,LIP_OUTER_LOOP,W,H);
     lx.beginPath(); softPolyPath(lx,outerPts); lx.fill();
-    // 2. Punch out inner mouth (teeth) region
     lx.globalCompositeOperation='destination-out';
     lx.filter='blur(0.8px)';
     const innerPts=lmPts(lm,LIP_INNER,W,H);
     lx.beginPath(); softPolyPath(lx,innerPts); lx.fill();
-    // 3. Add Cupid's bow specular highlight
     lx.globalCompositeOperation='source-over';
     lx.filter='blur(2.5px)';
     lx.globalAlpha=0.20;
     lx.fillStyle='rgba(255,255,255,1)';
     const shinePts=lmPts(lm,[37,0,267,82,13,312],W,H);
     lx.beginPath(); softPolyPath(lx,shinePts); lx.fill();
-    // 4. Stamp the lip layer onto the main canvas with multiply at focal alpha
     ctx.save();
     ctx.globalCompositeOperation='multiply';
     ctx.globalAlpha=0.90*mult.lips;

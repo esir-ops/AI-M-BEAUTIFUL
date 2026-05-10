@@ -95,6 +95,10 @@
       <div id="light-warn" class="light-warn hide">
         ⚠ Too dark — please turn on your LED strip
       </div>
+      <div id="glasses-warn" class="glasses-warn hide">
+        <span>👓 Remove glasses &amp; accessories for the most accurate AI analysis</span>
+        <button class="glasses-warn-close" onclick="hideGlassesWarn()" aria-label="Dismiss">✕</button>
+      </div>
     </div>
     <div class="pill-row">
       <div class="pill" id="pill-face">Face: searching...</div>
@@ -221,6 +225,6 @@
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js" crossorigin="anonymous"></script>
-<script src="app.js"></script>
+<script src="app.js?v=10"></script>
 </body>
 </html>
